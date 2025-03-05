@@ -173,7 +173,7 @@ class RandomDrivingWorld(DrivingWorld):
             self.space.add(body, shape)
         
         # Reset blocked_coords to be recalculated based on the new obstacles
-        self._blocked_coords = None
+        # self._blocked_coords = None
 
     def _generate_random_obstacles(
         self,

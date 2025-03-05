@@ -46,6 +46,7 @@ for i in range(100):
         print(f"Truncations: {truncations}")
     
     # Slow down the rendering
+    env.render()
     time.sleep(0.1)
     
     # Check if all agents are done
