@@ -39,6 +39,21 @@ register(
 )
 
 register(
+    id="DrivingContinuousRandom-v0",
+    entry_point="posggym.envs.continuous.driving_continuous_random:DrivingContinuousRandomEnv",
+    max_episode_steps=100,
+    kwargs={
+        "world": "14x14Empty",
+        "num_agents": 2,
+        "obs_dist": 5.0,
+        "n_sensors": 16,
+        "obstacle_radius_range": (0.3, 0.7),
+        "obstacle_density": 0.1,
+        "random_seed": None,
+    },
+)
+
+register(
     id="DroneTeamCapture-v0",
     entry_point="posggym.envs.continuous.drone_team_capture:DroneTeamCaptureEnv",
     max_episode_steps=500,
