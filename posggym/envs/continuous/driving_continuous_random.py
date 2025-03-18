@@ -272,6 +272,7 @@ class RandomDrivingWorld(DrivingWorld):
             blocked_coords=self._blocked_coords,
             start_coords=self.start_coords,
             dest_coords=self.dest_coords,
+            obstacle_density=0, # No need to regenerate obstacles
         )
         
         # Copy the blocks directly instead of regenerating them
