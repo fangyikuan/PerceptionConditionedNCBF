@@ -12,10 +12,12 @@ sensor_model = ExponentialSensorModel(beta=0.2)  # Higher beta means faster deca
 env = posggym.make(
     "DrivingContinuousRandom-v0",
     render_mode="human",
-    obstacle_density=0.2,  # Increase density for more obstacles
+    obstacle_density=0.05,  # Increase density for more obstacles
     obstacle_radius_range=(0.2, 0.8),  # Vary the size of obstacles
     random_seed=42,  # Set seed for reproducibility
     sensor_model=sensor_model,  # Use our exponential sensor model
+    n_sensors=32,
+    num_agents=1,
 )
 
 print(f"Environment created: {env}")
