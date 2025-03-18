@@ -507,7 +507,7 @@ class DrivingContinuousModel(M.POSGModel[DState, DObs, DAction]):
 
         self.dyaw_limit = math.pi / 4
         self.dvel_limit = 0.25
-        self.vel_limit_norm = 1.0
+        self.vel_limit_norm = 1000000000.0
         # dyaw, dvel
         self.action_spaces = {
             i: spaces.Box(
