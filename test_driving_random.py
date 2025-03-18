@@ -3,6 +3,10 @@
 import posggym
 import numpy as np
 import time
+from posggym.envs.continuous.driving_continuous import ExponentialSensorModel
+
+# Create a sensor model with exponential decay
+sensor_model = ExponentialSensorModel(beta=0.2)  # Higher beta means faster decay
 
 # Create the environment
 env = posggym.make(
@@ -11,6 +15,7 @@ env = posggym.make(
     obstacle_density=0.2,  # Increase density for more obstacles
     obstacle_radius_range=(0.2, 0.8),  # Vary the size of obstacles
     random_seed=42,  # Set seed for reproducibility
+    sensor_model=sensor_model,  # Use our exponential sensor model
 )
 
 print(f"Environment created: {env}")

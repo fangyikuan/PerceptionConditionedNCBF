@@ -17,6 +17,7 @@ from posggym.envs.continuous.driving_continuous import (
     DrivingContinuousEnv,
     DrivingContinuousModel,
     DrivingWorld,
+    SensorModel,
     parseworld_str,
 )
 
@@ -51,6 +52,7 @@ class DrivingContinuousRandomEnv(DrivingContinuousEnv):
         obstacle_radius_range: Tuple[float, float] = (0.3, 0.7),
         obstacle_density: float = 0.1,
         random_seed: Optional[int] = None,
+        sensor_model: Optional[SensorModel] = None,
         render_mode: Optional[str] = None,
     ):
         # Create the model first
@@ -62,6 +64,7 @@ class DrivingContinuousRandomEnv(DrivingContinuousEnv):
             obstacle_radius_range,
             obstacle_density,
             random_seed,
+            sensor_model,
         )
         
         # Initialize with our custom model
@@ -99,6 +102,8 @@ class RandomDrivingContinuousModel(DrivingContinuousModel):
         a value between 0 and 1 specifying the density of obstacles
     random_seed : Optional[int]
         an optional seed for the random number generator
+    sensor_model : Optional[SensorModel]
+        the sensor model to use for determining if sensor hits are registered
     """
 
     def __init__(
@@ -110,6 +115,7 @@ class RandomDrivingContinuousModel(DrivingContinuousModel):
         obstacle_radius_range: Tuple[float, float],
         obstacle_density: float,
         random_seed: Optional[int] = None,
+        sensor_model: Optional[SensorModel] = None,
     ):
         if isinstance(world, str):
             # Create a RandomDrivingWorld instead of a regular DrivingWorld
@@ -138,7 +144,7 @@ class RandomDrivingContinuousModel(DrivingContinuousModel):
                 )
 
         # Initialize the parent class with our RandomDrivingWorld
-        super().__init__(world, num_agents, obs_dist, n_sensors)
+        super().__init__(world, num_agents, obs_dist, n_sensors, sensor_model)
 
 
 class RandomDrivingWorld(DrivingWorld):

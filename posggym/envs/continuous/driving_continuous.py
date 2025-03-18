@@ -1,6 +1,7 @@
 """The Driving Continuous Environment."""
 
 import math
+import abc
 from itertools import product
 from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple, Union, cast
 
@@ -22,6 +23,74 @@ from posggym.envs.continuous.core import (
     generate_interior_walls,
 )
 from posggym.utils import seeding
+
+
+class SensorModel(abc.ABC):
+    """Abstract class for sensor models.
+    
+    A sensor model defines whether there is a sensor hit given an input distance.
+    """
+    
+    @abc.abstractmethod
+    def is_hit(self, distance: float) -> bool:
+        """Determine if there is a sensor hit at the given distance.
+        
+        Parameters
+        ----------
+        distance : float
+            The distance to the object
+            
+        Returns
+        -------
+        bool
+            True if there is a sensor hit, False otherwise
+        """
+        pass
+
+
+class DefaultSensorModel(SensorModel):
+    """Default sensor model that always returns a hit (pass-through).
+    
+    This model doesn't apply any probability to sensor readings.
+    """
+    
+    def is_hit(self, distance: float) -> bool:
+        """Always returns True (sensor always registers a hit)."""
+        return True
+
+
+class ExponentialSensorModel(SensorModel):
+    """Exponential sensor model where probability of hit decreases with distance.
+    
+    The probability of a hit is defined as P(d) = np.exp(-B * d), where B is a
+    parameter controlling the rate of decay.
+    """
+    
+    def __init__(self, beta: float = 0.1):
+        """Initialize the exponential sensor model.
+        
+        Parameters
+        ----------
+        beta : float
+            The decay parameter controlling how quickly probability decreases with distance
+        """
+        self.beta = beta
+    
+    def is_hit(self, distance: float) -> bool:
+        """Return True if a randomly drawn float is below P(d), False otherwise.
+        
+        Parameters
+        ----------
+        distance : float
+            The distance to the object
+            
+        Returns
+        -------
+        bool
+            True if there is a sensor hit, False otherwise
+        """
+        probability = np.exp(-self.beta * distance)
+        return np.random.random() < probability
 
 
 class VehicleState(NamedTuple):
@@ -156,6 +225,8 @@ class DrivingContinuousEnv(DefaultEnv[DState, DObs, DAction]):
     - `n_sensors` - the number of sensor lines eminating from the agent. The agent will
          observe at `n_sensors` equidistance intervals over `[0, 2*pi]`
          (default = `16`).
+    - `sensor_model` - the sensor model to use for determining if sensor hits are registered
+         (default = `DefaultSensorModel()`).
 
     Available variants
     ------------------
@@ -207,10 +278,11 @@ class DrivingContinuousEnv(DefaultEnv[DState, DObs, DAction]):
         num_agents: int = 2,
         obs_dist: float = 5.0,
         n_sensors: int = 16,
+        sensor_model: Optional[SensorModel] = None,
         render_mode: Optional[str] = None,
     ):
         super().__init__(
-            DrivingContinuousModel(world, num_agents, obs_dist, n_sensors),
+            DrivingContinuousModel(world, num_agents, obs_dist, n_sensors, sensor_model),
             render_mode=render_mode,
         )
         self.window_surface = None
@@ -386,6 +458,7 @@ class DrivingContinuousModel(M.POSGModel[DState, DObs, DAction]):
         num_agents: int,
         obs_dist: float,
         n_sensors: int,
+        sensor_model: Optional[SensorModel] = None,
     ):
         if isinstance(world, str):
             assert world in SUPPORTED_WORLDS, (
@@ -406,6 +479,7 @@ class DrivingContinuousModel(M.POSGModel[DState, DObs, DAction]):
         self.n_sensors = n_sensors
         self.obs_dist = obs_dist
         self.vehicle_collision_dist = 2.1 * self.world.agent_radius
+        self.sensor_model = sensor_model if sensor_model is not None else DefaultSensorModel()
 
         self.possible_agents = tuple(str(i) for i in range(num_agents))
         self.state_space = spaces.Tuple(
@@ -656,6 +730,12 @@ class DrivingContinuousModel(M.POSGModel[DState, DObs, DAction]):
             check_walls=True,
             use_relative_angle=True,
         )
+
+        # Apply sensor model to determine if hits are registered
+        for i, dist in enumerate(ray_dists):
+            # If the sensor model reports a miss, change the collision type to NONE
+            if ray_col_type[i] != CollisionType.NONE.value and not self.sensor_model.is_hit(dist):
+                ray_col_type[i] = CollisionType.NONE.value
 
         obs = np.full((self.obs_dim,), self.obs_dist, dtype=np.float32)
         # Can bucket NONE type collisions with block/border/wall collisions, since these
