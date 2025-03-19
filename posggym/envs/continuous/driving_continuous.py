@@ -417,7 +417,6 @@ class DrivingContinuousEnv(DefaultEnv[DState, DObs, DAction]):
                 self.window_surface = pygame.Surface(
                     (self.window_size, self.window_size)
                 )
-            # Turn off alpha since we don't use it.
             self.window_surface.set_alpha(255)
 
         if self.clock is None:
@@ -846,10 +845,10 @@ class DrivingContinuousModel(M.POSGModel[DState, DObs, DAction]):
         # Apply sensor model to determine if hits are registered
         for i, dist in enumerate(ray_dists):
             # If the sensor model reports a miss, change the collision type to NONE
-            if ray_col_type[
-                i
-            ] != CollisionType.NONE.value and not self.sensor_model.is_hit(dist):
+            if (ray_col_type[ i ] != CollisionType.NONE.value 
+                and not self.sensor_model.is_hit(dist)):
                 ray_col_type[i] = CollisionType.NONE.value
+                ray_dists[i] = self.obs_dist
 
         obs = np.full((self.obs_dim,), self.obs_dist, dtype=np.float32)
         # Can bucket NONE type collisions with block/border/wall collisions, since these

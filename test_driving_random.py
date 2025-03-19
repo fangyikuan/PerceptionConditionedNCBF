@@ -17,7 +17,7 @@ env = posggym.make(
     random_seed=42,  # Set seed for reproducibility
     sensor_model=sensor_model,  # Use our exponential sensor model
     n_sensors=32,
-    obs_dist=100,
+    obs_dist=5,
     num_agents=2,
 )
 
