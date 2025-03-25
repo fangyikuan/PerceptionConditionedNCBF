@@ -18,7 +18,7 @@ env = posggym.make(
     sensor_model=sensor_model,  # Use our exponential sensor model
     n_sensors=32,
     obs_dist=5,
-    num_agents=2,
+    num_agents=1,
 )
 
 print(f"Environment created: {env}")
