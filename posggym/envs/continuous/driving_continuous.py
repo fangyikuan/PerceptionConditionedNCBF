@@ -318,7 +318,7 @@ class DrivingContinuousEnv(DefaultEnv[DState, DObs, DAction]):
                 end_x = x + dist * math.cos(angle)
                 end_y = y + dist * math.sin(angle)
                 scaled_start = (int(x * scale_factor), int(y * scale_factor))
-                scaled_end = int(end_x * scale_factor), (end_y * scale_factor)
+                scaled_end = int(end_x * scale_factor), int(end_y * scale_factor)
 
                 pygame.draw.line(
                     self.window_surface,
