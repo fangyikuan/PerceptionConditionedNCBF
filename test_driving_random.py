@@ -31,13 +31,14 @@ def generate_random_traj(env, num_traj, horizon=100, sleep_time=0.0, render=Fals
             "observations": [obs[agent_id]],
             "actions": [],
             "rewards": [],
+            "states": [],
             "infos": [info]
         }
 
         for t in range(horizon):
             action = env.action_spaces[agent_id].sample()
             actions = {agent_id: action}
-
+            state = env.state[agent_id]["body"]
             step_result = env.step(actions)
             if len(step_result) == 6:
                 next_obs, rewards, terminations, truncations, _, infos = step_result
@@ -47,6 +48,7 @@ def generate_random_traj(env, num_traj, horizon=100, sleep_time=0.0, render=Fals
             trajectory["actions"].append(action)
             trajectory["rewards"].append(rewards[agent_id])
             trajectory["observations"].append(next_obs[agent_id])
+            trajectory["states"].append(state)
             trajectory["infos"].append(infos[agent_id])
 
             if render:
@@ -128,7 +130,7 @@ print(f"Observation spaces: {env.observation_spaces}")
 # Reset the environment
 obs, info = env.reset()
 print(f"Initial observation: {obs.keys()}")
-raw_training_data, raw_test_data = build_dataset_from_env(env, num_traj=200, horizon=100)
+raw_training_data, raw_test_data = build_dataset_from_env(env, num_traj=20, horizon=100)
 trainer = NCBFTrainer(
     state_dim=37,
     control_dim=2,
