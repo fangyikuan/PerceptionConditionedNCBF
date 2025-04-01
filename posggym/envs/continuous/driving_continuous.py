@@ -793,6 +793,15 @@ class DrivingContinuousModel(M.POSGModel[DState, DObs, DAction]):
                         # if it has not already reached destination
                         other_v_state.status[1] = int(True)
                         collision_types[other_idx] = CollisionType.AGENT
+            
+            # Check for collisions with obstacles (blocks)
+            if not crashed and hasattr(self.world, 'blocks'):
+                for pos, radius in self.world.blocks:
+                    dist = np.linalg.norm(np.array(pos[:2]) - next_v_coords[:2])
+                    if dist <= (self.world.agent_radius + radius):
+                        crashed = True
+                        collision_types[idx] = CollisionType.BLOCK
+                        break
 
             crashed = crashed or bool(state_i.status[1])
 

@@ -175,11 +175,11 @@ class RandomDrivingWorld(DrivingWorld):
             body.position = Vec2d(pos[0], pos[1])
             shape.elasticity = 0.0  # no bouncing
             shape.color = self.BLOCK_COLOR
-            shape.collision_type = self.get_collision_id()
+            shape.collision_type = self.get_collision_id() + 1  # Use the same collision type as blocks
             self.space.add(body, shape)
-        
-        # Reset blocked_coords to be recalculated based on the new obstacles
-        # self._blocked_coords = None
+            
+            # Add the obstacle to the blocks list for collision detection
+            self._blocked_coords.add((int(pos[0]), int(pos[1])))
 
     def _generate_random_obstacles(
         self,

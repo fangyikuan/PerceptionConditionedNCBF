@@ -12,8 +12,7 @@ from copy import deepcopy
 from typing import Any, Callable, Dict, Iterable, List, Tuple
 
 import numpy as np
-from gymnasium.vector.utils import concatenate, create_empty_array
-from gymnasium.vector.utils.spaces import batch_space
+from gymnasium.vector.utils import concatenate, create_empty_array, batch_space
 
 import posggym
 
