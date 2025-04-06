@@ -379,7 +379,7 @@ SUPPORTED_RANDOM_WORLDS: Dict[str, Dict[str, Any]] = {
 # Add agent start and destination positions to the empty world
 for r in range(14):
     for c in range(14):
-        if (r == 0 or r == 13) and (c == 0 or c == 13):
+        if (r % 3 == 0) and (c % 3 == 0):
             # Add agent start positions at the corners
             row_list = list(SUPPORTED_RANDOM_WORLDS["14x14Empty"]["world_str"].split("\n"))
             row = list(row_list[r])
