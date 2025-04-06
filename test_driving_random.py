@@ -129,8 +129,8 @@ sensor_model = ExponentialSensorModel(beta=1.0)
 env = posggym.make(
     "DrivingContinuousRandom-v0",
     render_mode="human",
-    obstacle_density=0.3,  # Increase density for more obstacles
-    obstacle_radius_range=(0.5, 1.0),  # Larger obstacles
+    obstacle_density=0.2,  # Increase density for more obstacles
+    obstacle_radius_range=(0.4, 0.8),  # Larger obstacles
     random_seed=42,  # Set seed for reproducibility
     sensor_model=sensor_model,  # Use our exponential sensor model
     n_sensors=32,
