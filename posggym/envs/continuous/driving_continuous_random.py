@@ -17,6 +17,7 @@ from posggym.envs.continuous.driving_continuous import (
     DrivingContinuousEnv,
     DrivingContinuousModel,
     DrivingWorld,
+    SensorModel,
     parseworld_str,
 )
 
@@ -51,6 +52,7 @@ class DrivingContinuousRandomEnv(DrivingContinuousEnv):
         obstacle_radius_range: Tuple[float, float] = (0.3, 0.7),
         obstacle_density: float = 0.1,
         random_seed: Optional[int] = None,
+        sensor_model: Optional[SensorModel] = None,
         render_mode: Optional[str] = None,
     ):
         # Create the model first
@@ -62,6 +64,7 @@ class DrivingContinuousRandomEnv(DrivingContinuousEnv):
             obstacle_radius_range,
             obstacle_density,
             random_seed,
+            sensor_model,
         )
         
         # Initialize with our custom model
@@ -99,6 +102,8 @@ class RandomDrivingContinuousModel(DrivingContinuousModel):
         a value between 0 and 1 specifying the density of obstacles
     random_seed : Optional[int]
         an optional seed for the random number generator
+    sensor_model : Optional[SensorModel]
+        the sensor model to use for determining if sensor hits are registered
     """
 
     def __init__(
@@ -110,6 +115,7 @@ class RandomDrivingContinuousModel(DrivingContinuousModel):
         obstacle_radius_range: Tuple[float, float],
         obstacle_density: float,
         random_seed: Optional[int] = None,
+        sensor_model: Optional[SensorModel] = None,
     ):
         if isinstance(world, str):
             # Create a RandomDrivingWorld instead of a regular DrivingWorld
@@ -138,7 +144,7 @@ class RandomDrivingContinuousModel(DrivingContinuousModel):
                 )
 
         # Initialize the parent class with our RandomDrivingWorld
-        super().__init__(world, num_agents, obs_dist, n_sensors)
+        super().__init__(world, num_agents, obs_dist, n_sensors, sensor_model)
 
 
 class RandomDrivingWorld(DrivingWorld):
@@ -169,11 +175,8 @@ class RandomDrivingWorld(DrivingWorld):
             body.position = Vec2d(pos[0], pos[1])
             shape.elasticity = 0.0  # no bouncing
             shape.color = self.BLOCK_COLOR
-            shape.collision_type = self.get_collision_id()
+            shape.collision_type = self.get_collision_id() + 1  # Use the same collision type as blocks
             self.space.add(body, shape)
-        
-        # Reset blocked_coords to be recalculated based on the new obstacles
-        # self._blocked_coords = None
 
     def _generate_random_obstacles(
         self,
@@ -266,6 +269,7 @@ class RandomDrivingWorld(DrivingWorld):
             blocked_coords=self._blocked_coords,
             start_coords=self.start_coords,
             dest_coords=self.dest_coords,
+            obstacle_density=0, # No need to regenerate obstacles
         )
         
         # Copy the blocks directly instead of regenerating them
@@ -278,7 +282,7 @@ class RandomDrivingWorld(DrivingWorld):
             body.position = Vec2d(pos[0], pos[1])
             shape.elasticity = 0.0  # no bouncing
             shape.color = self.BLOCK_COLOR
-            shape.collision_type = world.get_collision_id()
+            shape.collision_type = world.get_collision_id() + 1  # Use the same collision type as blocks
             world.space.add(body, shape)
         
         # Copy entities
@@ -375,7 +379,7 @@ SUPPORTED_RANDOM_WORLDS: Dict[str, Dict[str, Any]] = {
 # Add agent start and destination positions to the empty world
 for r in range(14):
     for c in range(14):
-        if (r == 0 or r == 13) and (c == 0 or c == 13):
+        if (r % 3 == 0) and (c % 3 == 0):
             # Add agent start positions at the corners
             row_list = list(SUPPORTED_RANDOM_WORLDS["14x14Empty"]["world_str"].split("\n"))
             row = list(row_list[r])

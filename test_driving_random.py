@@ -3,6 +3,7 @@
 import posggym
 import numpy as np
 import time
+from posggym.envs.continuous.driving_continuous import ExponentialSensorModel
 import pickle
 from train_ncbf_new import NCBFTrainer
 from tqdm import trange
@@ -24,31 +25,41 @@ def generate_random_traj(env, num_traj, horizon=100, sleep_time=0.0, render=Fals
     agent_id = env.agents[0]  # Assumes single-agent for now
 
     trajectories = []
-
+    env._max_episode_steps = horizon
     for traj_idx in trange(num_traj):
         obs, info = env.reset(seed=None)  # Can pass specific seed for reproducibility
         trajectory = {
             "observations": [obs[agent_id]],
+            "observation_diff": [np.zeros(obs[agent_id].shape)],
             "actions": [],
             "rewards": [],
             "states": [],
+            "safe":[],
             "infos": [info]
         }
 
         for t in range(horizon):
             action = env.action_spaces[agent_id].sample()
             actions = {agent_id: action}
-            state = env.state[agent_id]["body"]
+            state = env.state[int(agent_id)].body
+
             step_result = env.step(actions)
             if len(step_result) == 6:
                 next_obs, rewards, terminations, truncations, _, infos = step_result
             else:
                 next_obs, rewards, terminations, truncations, infos = step_result
-
+            obs_diff = next_obs[agent_id] - trajectory["observations"][-1]
+            crashed = env.state[int(agent_id)].status[1]
+            if crashed == 0:
+                is_safe = True
+            else:
+                is_safe = False
             trajectory["actions"].append(action)
             trajectory["rewards"].append(rewards[agent_id])
             trajectory["observations"].append(next_obs[agent_id])
+            trajectory["observation_diff"].append(obs_diff)
             trajectory["states"].append(state)
+            trajectory["safe"].append(is_safe)
             trajectory["infos"].append(infos[agent_id])
 
             if render:
@@ -66,13 +77,13 @@ def generate_random_traj(env, num_traj, horizon=100, sleep_time=0.0, render=Fals
 def build_dataset_from_env(env, num_traj, horizon, n_ignore=50):
     """Build dataset using posggym environment and random trajectories."""
     from collections import deque
-
+    env.spec.max_episode_steps = horizon
     agent_id = env.agents[0]
     Xrefs = []
     Urefs = []
 
     # Generate trajectories
-    trajectories = generate_random_traj(env, num_traj=num_traj, horizon=horizon, render=False)
+    trajectories = generate_random_traj(env, num_traj=num_traj, horizon=horizon, render=True)
 
     for traj in trajectories:
         obs = traj["observations"]
@@ -114,12 +125,17 @@ def build_dataset_from_env(env, num_traj, horizon, n_ignore=50):
     print(f"Saved {len(data[:-1000])} training samples and {len(data[-1000:])} test samples")
     return data[:-1000], data[-1000:]
 # Create the environment
+sensor_model = ExponentialSensorModel(beta=1.0)
 env = posggym.make(
     "DrivingContinuousRandom-v0",
     render_mode="human",
     obstacle_density=0.2,  # Increase density for more obstacles
-    obstacle_radius_range=(0.2, 0.8),  # Vary the size of obstacles
+    obstacle_radius_range=(0.4, 0.8),  # Larger obstacles
     random_seed=42,  # Set seed for reproducibility
+    sensor_model=sensor_model,  # Use our exponential sensor model
+    n_sensors=32,
+    obs_dist=5,
+    num_agents=1,
 )
 
 print(f"Environment created: {env}")
@@ -130,7 +146,7 @@ print(f"Observation spaces: {env.observation_spaces}")
 # Reset the environment
 obs, info = env.reset()
 print(f"Initial observation: {obs.keys()}")
-raw_training_data, raw_test_data = build_dataset_from_env(env, num_traj=20, horizon=100)
+raw_training_data, raw_test_data = build_dataset_from_env(env, num_traj=200, horizon=100)
 trainer = NCBFTrainer(
     state_dim=37,
     control_dim=2,
@@ -140,7 +156,7 @@ trainer = NCBFTrainer(
 )
 model, train_loss, test_loss = trainer.train()
 # Run a few random steps
-# for i in range(100):
+# for i in range(200):
 #     # Sample random actions for all agents
 #     actions = {agent: env.action_spaces[agent].sample() for agent in env.agents}
 #
@@ -161,6 +177,13 @@ model, train_loss, test_loss = trainer.train()
 #         print(f"Rewards: {rewards}")
 #         print(f"Terminations: {terminations}")
 #         print(f"Truncations: {truncations}")
+#         print(f"Info: {infos}")
+#
+#     # Check for collisions and print them
+#     for agent_id, info in infos.items():
+#         if 'outcome' in info and hasattr(info['outcome'], 'value') and info['outcome'].value == -1:
+#             print(f"\nCOLLISION DETECTED at step {i} for agent {agent_id}!")
+#             print(f"Reward: {rewards[agent_id]}")
 #
 #     # Slow down the rendering
 #     env.render()

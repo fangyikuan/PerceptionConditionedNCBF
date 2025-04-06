@@ -44,7 +44,7 @@ register(
     max_episode_steps=100,
     kwargs={
         "world": "14x14Empty",
-        "num_agents": 1,
+        "num_agents": 2,
         "obs_dist": 5.0,
         "n_sensors": 16,
         "obstacle_radius_range": (0.3, 0.7),

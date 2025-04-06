@@ -1,6 +1,9 @@
 """The Driving Continuous Environment."""
 
+import copy
+import pygame
 import math
+import abc
 from itertools import product
 from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple, Union, cast
 
@@ -22,6 +25,164 @@ from posggym.envs.continuous.core import (
     generate_interior_walls,
 )
 from posggym.utils import seeding
+
+
+class SensorModel(abc.ABC):
+    """Abstract class for sensor models.
+
+    A sensor model defines whether there is a sensor hit given an input distance.
+    """
+
+    def is_hit(self, distance: float) -> bool:
+        """Determine if there is a sensor hit at the given distance.
+
+        Parameters
+        ----------
+        distance : float
+            The distance to the object
+
+        Returns
+        -------
+        bool
+            True if there is a sensor hit, False otherwise
+        """
+        return np.random.random() < self.probability(distance)
+    
+    @abc.abstractmethod
+    def probability(self, distance: float) -> float:
+        """Determine the probability of a sensor hit at the given distance.
+
+        Parameters
+        ----------
+        distance : float
+            The distance to the object
+
+        Returns
+        -------
+        float
+            The probability of a sensor hit
+        """
+        pass
+
+
+class DefaultSensorModel(SensorModel):
+    """Default sensor model that always returns a hit (pass-through).
+
+    This model doesn't apply any probability to sensor readings.
+    """
+
+    def probability(self, _):
+        return 1.0
+
+
+class ExponentialSensorModel(SensorModel):
+    """Exponential sensor model where probability of hit decreases with distance.
+
+    The probability of a hit is defined as P(d) = np.exp(-B * d), where B is a
+    parameter controlling the rate of decay.
+    """
+
+    def __init__(self, beta: float = 0.1):
+        """Initialize the exponential sensor model.
+
+        Parameters
+        ----------
+        beta : float
+            The decay parameter controlling how quickly probability decreases with distance
+        """
+        self.beta = beta
+    
+    def probability(self, distance):
+        return np.exp(-self.beta * distance)
+
+
+def getLinePath(start_pos, end_pos):
+    """Using Bresenham's Line algorithm, get a list of all the points
+    along a straight-line path from the start to the end (inclusive).
+    Note that this includes diagonal movement"""
+
+    # clamp range to window
+    x0, y0 = start_pos
+    x1, y1 = end_pos
+    points = []
+
+    # ref: https://en.wikipedia.org/wiki/Bresenham%27s_line_algorithm#Algorithm_for_integer_arithmetic
+    dx = abs(x1 - x0)
+    if x0 < x1:
+        sx = 1
+    else:
+        sx = -1
+    dy = -abs(y1 - y0)
+    if y0 < y1:
+        sy = 1
+    else:
+        sy = -1
+    error = dx + dy
+
+    while True:
+        points.append((x0, y0))
+        if x0 == x1 and y0 == y1:
+            break
+        e2 = 2 * error
+        if e2 >= dy:
+            if x0 == x1:
+                break
+            error = error + dy
+            x0 = x0 + sx
+        if e2 <= dx:
+            if y0 == y1:
+                break
+            error = error + dx
+            y0 = y0 + sy
+
+    return points
+
+
+class GradientLine:
+    def __init__(
+        self,
+        start_point,
+        end_point,
+        color_function,
+        thickness: int = 1,
+    ):
+        self.lines = []
+        self.width = thickness
+
+        line_pixels = getLinePath(start_point, end_point)
+
+        red, green, blue, alpha = color_function(0)
+
+        # It is too inefficient to continually draw a huge whack of pixels
+        # So Identify a bunch of line-segments that are the same color
+        prev_point = None
+        for pixel in line_pixels:
+            if prev_point == None:
+                prev_point = pixel
+                prev_red, prev_green, prev_blue, prev_alpha = red, green, blue, alpha,
+                
+            else:
+                # calculate the next color
+                # if that color significantly different, output a line segment
+                if (
+                    abs(prev_red - red) > 1.0
+                    or abs(prev_green - green) > 1.0
+                    or abs(prev_blue - blue) > 1.0
+                    or abs(prev_alpha - alpha) > 1.0
+                ):
+                    color = (int(prev_red), int(prev_green), int(prev_blue), int(prev_alpha))
+                    self.lines.append((prev_point, pixel, color))
+                    prev_point = None
+
+            # crawl the gradient
+            current_pixel_distance = np.linalg.norm(np.array(pixel) - np.array(start_point))
+            red, green, blue, alpha = color_function(current_pixel_distance)
+
+    def draw(self, surface: pygame.Surface):
+        """Draw a line from start to end, changing color along the way"""
+        for segment in self.lines:
+            point_a, point_b, color = segment
+            pygame.draw.line(surface, color, point_a, point_b, self.width)
 
 
 class VehicleState(NamedTuple):
@@ -156,6 +317,8 @@ class DrivingContinuousEnv(DefaultEnv[DState, DObs, DAction]):
     - `n_sensors` - the number of sensor lines eminating from the agent. The agent will
          observe at `n_sensors` equidistance intervals over `[0, 2*pi]`
          (default = `16`).
+    - `sensor_model` - the sensor model to use for determining if sensor hits are registered
+         (default = `DefaultSensorModel()`).
 
     Available variants
     ------------------
@@ -207,10 +370,13 @@ class DrivingContinuousEnv(DefaultEnv[DState, DObs, DAction]):
         num_agents: int = 2,
         obs_dist: float = 5.0,
         n_sensors: int = 16,
+        sensor_model: Optional[SensorModel] = None,
         render_mode: Optional[str] = None,
     ):
         super().__init__(
-            DrivingContinuousModel(world, num_agents, obs_dist, n_sensors),
+            DrivingContinuousModel(
+                world, num_agents, obs_dist, n_sensors, sensor_model
+            ),
             render_mode=render_mode,
         )
         self.window_surface = None
@@ -233,7 +399,6 @@ class DrivingContinuousEnv(DefaultEnv[DState, DObs, DAction]):
 
     def _render_img(self):
         # import posggym.envs.continuous.render as render_lib
-        import pygame
         from pymunk import Transform, pygame_util
 
         model = cast(DrivingContinuousModel, self.model)
@@ -252,8 +417,7 @@ class DrivingContinuousEnv(DefaultEnv[DState, DObs, DAction]):
                 self.window_surface = pygame.Surface(
                     (self.window_size, self.window_size)
                 )
-            # Turn off alpha since we don't use it.
-            self.window_surface.set_alpha(None)
+            self.window_surface.set_alpha(255)
 
         if self.clock is None:
             self.clock = pygame.time.Clock()
@@ -294,12 +458,16 @@ class DrivingContinuousEnv(DefaultEnv[DState, DObs, DAction]):
 
         # reset screen
         self.window_surface.fill(pygame.Color("white"))
+        self.window_surface.set_alpha(0)
 
         # add blocks
         self.window_surface.blit(self.blocked_surface, (0, 0))
 
-        lines_colors = ["red", "green", "black"]
+        lines_colors = [pygame.Color("red"), pygame.Color("green"), pygame.Color("black")]
         # draw sensor lines
+        line_surface = pygame.Surface((self.window_size, self.window_size)).convert_alpha()
+        line_surface.fill([0,0,0,0])
+
         n_sensors = model.n_sensors
         for i, obs_i in self._last_obs.items():
             line_obs = obs_i[: model.sensor_obs_dim]
@@ -320,12 +488,25 @@ class DrivingContinuousEnv(DefaultEnv[DState, DObs, DAction]):
                 scaled_start = (int(x * scale_factor), int(y * scale_factor))
                 scaled_end = int(end_x * scale_factor), int(end_y * scale_factor)
 
-                pygame.draw.line(
-                    self.window_surface,
-                    pygame.Color(lines_colors[dist_idx]),
-                    scaled_start,
-                    scaled_end,
-                )
+                nominal_color = lines_colors[dist_idx]
+
+                def color_fn(pixel_dist):
+                    color = copy.deepcopy(nominal_color)
+                    color.a = int(255 * model.sensor_model.probability(pixel_dist / scale_factor))
+                    return color
+
+                gradient_line = GradientLine(scaled_start, scaled_end, color_fn, thickness=3)
+                gradient_line.draw(line_surface)
+                self.window_surface.blit(line_surface, (0, 0))
+
+                # color = pygame.Color(lines_colors[dist_idx])
+                # color.a = 20 
+                # pygame.draw.line(
+                #     self.window_surface,
+                #     color,
+                #     scaled_start,
+                #     scaled_end,
+                # )
 
         for i, v in enumerate(state):
             x, y = v.dest_coord[:2]
@@ -386,6 +567,7 @@ class DrivingContinuousModel(M.POSGModel[DState, DObs, DAction]):
         num_agents: int,
         obs_dist: float,
         n_sensors: int,
+        sensor_model: Optional[SensorModel] = None,
     ):
         if isinstance(world, str):
             assert world in SUPPORTED_WORLDS, (
@@ -406,6 +588,9 @@ class DrivingContinuousModel(M.POSGModel[DState, DObs, DAction]):
         self.n_sensors = n_sensors
         self.obs_dist = obs_dist
         self.vehicle_collision_dist = 2.1 * self.world.agent_radius
+        self.sensor_model = (
+            sensor_model if sensor_model is not None else DefaultSensorModel()
+        )
 
         self.possible_agents = tuple(str(i) for i in range(num_agents))
         self.state_space = spaces.Tuple(
@@ -433,7 +618,7 @@ class DrivingContinuousModel(M.POSGModel[DState, DObs, DAction]):
 
         self.dyaw_limit = math.pi / 4
         self.dvel_limit = 0.25
-        self.vel_limit_norm = 1.0
+        self.vel_limit_norm = 1000000000.0
         # dyaw, dvel
         self.action_spaces = {
             i: spaces.Box(
@@ -608,6 +793,15 @@ class DrivingContinuousModel(M.POSGModel[DState, DObs, DAction]):
                         # if it has not already reached destination
                         other_v_state.status[1] = int(True)
                         collision_types[other_idx] = CollisionType.AGENT
+            
+            # Check for collisions with obstacles (blocks)
+            if not crashed and hasattr(self.world, 'blocks'):
+                for pos, radius in self.world.blocks:
+                    dist = np.linalg.norm(np.array(pos[:2]) - next_v_coords[:2])
+                    if dist <= (self.world.agent_radius + radius):
+                        crashed = True
+                        collision_types[idx] = CollisionType.BLOCK
+                        break
 
             crashed = crashed or bool(state_i.status[1])
 
@@ -656,6 +850,14 @@ class DrivingContinuousModel(M.POSGModel[DState, DObs, DAction]):
             check_walls=True,
             use_relative_angle=True,
         )
+
+        # Apply sensor model to determine if hits are registered
+        for i, dist in enumerate(ray_dists):
+            # If the sensor model reports a miss, change the collision type to NONE
+            if (ray_col_type[ i ] != CollisionType.NONE.value 
+                and not self.sensor_model.is_hit(dist)):
+                ray_col_type[i] = CollisionType.NONE.value
+                ray_dists[i] = self.obs_dist
 
         obs = np.full((self.obs_dim,), self.obs_dist, dtype=np.float32)
         # Can bucket NONE type collisions with block/border/wall collisions, since these
