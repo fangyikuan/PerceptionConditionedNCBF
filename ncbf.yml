@@ -1,0 +1,72 @@
+name: ncbf
+channels:
+  - conda-forge
+dependencies:
+  - _libgcc_mutex=0.1=conda_forge
+  - _openmp_mutex=4.5=2_gnu
+  - bzip2=1.0.8=h4bc722e_7
+  - ca-certificates=2025.1.31=hbcca054_0
+  - ld_impl_linux-64=2.43=h712a8e2_4
+  - libexpat=2.7.0=h5888daf_0
+  - libffi=3.4.6=h2dba641_1
+  - libgcc=14.2.0=h767d61c_2
+  - libgcc-ng=14.2.0=h69a702a_2
+  - libgomp=14.2.0=h767d61c_2
+  - liblzma=5.8.1=hb9d3cd8_0
+  - libmpdec=4.0.0=h4bc722e_0
+  - libsqlite=3.49.1=hee588c1_2
+  - libuuid=2.38.1=h0b41bf4_0
+  - libzlib=1.3.1=hb9d3cd8_2
+  - ncurses=6.5=h2d0b736_3
+  - openssl=3.4.1=h7b32b05_0
+  - pip=25.0.1=pyh145f28c_0
+  - python=3.13.2=hf636f53_101_cp313
+  - python_abi=3.13=6_cp313
+  - readline=8.2=h8c095d6_2
+  - tk=8.6.13=noxft_h4845f30_101
+  - tzdata=2025b=h78e105d_0
+  - pip:
+      - cffi==1.17.1
+      - cloudpickle==3.1.1
+      - contourpy==1.3.1
+      - cycler==0.12.1
+      - farama-notifications==0.0.4
+      - filelock==3.13.1
+      - fonttools==4.57.0
+      - fsspec==2024.6.1
+      - gymnasium==0.29.1
+      - jinja2==3.1.4
+      - kiwisolver==1.4.8
+      - markupsafe==3.0.2
+      - matplotlib==3.10.1
+      - mpmath==1.3.0
+      - networkx==3.3
+      - numpy==1.26.4
+      - nvidia-cublas-cu11==11.11.3.6
+      - nvidia-cuda-cupti-cu11==11.8.87
+      - nvidia-cuda-nvrtc-cu11==11.8.89
+      - nvidia-cuda-runtime-cu11==11.8.89
+      - nvidia-cudnn-cu11==9.1.0.70
+      - nvidia-cufft-cu11==10.9.0.58
+      - nvidia-curand-cu11==10.3.0.86
+      - nvidia-cusolver-cu11==11.4.1.48
+      - nvidia-cusparse-cu11==11.7.5.86
+      - nvidia-nccl-cu11==2.21.5
+      - nvidia-nvtx-cu11==11.8.86
+      - packaging==24.2
+      - pillow==11.0.0
+      - pycparser==2.22
+      - pygame==2.6.1
+      - pymunk==6.11.1
+      - pyparsing==3.2.3
+      - python-dateutil==2.9.0.post0
+      - scipy==1.15.2
+      - setuptools==70.2.0
+      - six==1.17.0
+      - sympy==1.13.1
+      - torch --index-url https://download.pytorch.org/whl/cu118
+      - torchaudio --index-url https://download.pytorch.org/whl/cu118
+      - torchvision --index-url https://download.pytorch.org/whl/cu118
+      - tqdm==4.67.1
+      - triton==3.2.0
+      - typing-extensions==4.13.1
