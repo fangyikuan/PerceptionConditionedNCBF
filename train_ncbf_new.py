@@ -47,8 +47,8 @@ class NCBFTrainer:
         self.optimizer = optim.NAdam(self.model.parameters(), lr=0.01, betas=(0.9, 0.999), weight_decay=0.1)
         self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=4, gamma=0.2)
 
-        self.train_loader = DataLoader(self.prepare_data(training_data), batch_size=batchsize, shuffle=True)
-        self.test_loader = DataLoader(self.prepare_data(test_data), batch_size=batchsize, shuffle=True)
+        self.train_loader = training_data
+        self.test_loader = test_data
 
     def prepare_data(self, raw_data):
         x_data = torch.tensor(np.column_stack([d[0] for d in raw_data]), dtype=torch.float32).to(self.device)
@@ -149,14 +149,19 @@ class NCBFTrainer:
         for epoch in range(1, self.total_epoch + 1):
             self.model.train()
             train_epoch_loss = []
-            for x, u, y in tqdm(self.train_loader, desc=f"Train Epoch {epoch}"):
-                A, B, Delta = self.compute_dynamics_and_residuals(x, u)
+            for batch in tqdm(self.train_loader, desc=f"Train Epoch {epoch}"):
+                obs_batch = batch["observation"].to(self.device)
+                obs_diff_batch = batch["observation_diff"].to(self.device)
+                action_batch = batch["action"].to(self.device)
+                state_batch = batch["state"].to(self.device)
+                label_batch = batch["label"].to(self.device)
+                A, B, Delta = self.compute_dynamics_and_residuals(state_batch, action_batch)
                 if self.use_pgd:
-                    u = self.pgd_find_u_notce(x, A, B, u, Delta)
+                    u = self.pgd_find_u_notce(state_batch, A, B, action_batch, Delta)
                 self.optimizer.zero_grad()
-                loss = self.loss_naive_safeset(x, y) + \
-                       self.lambda_param * self.loss_naive_fi(x, A, B, u, y, Delta) + \
-                       self.mu * self.loss_regularization(x, y)
+                loss = self.loss_naive_safeset(obs_batch, label_batch) + \
+                       self.lambda_param * self.loss_naive_fi(obs_batch, A, B, action_batch, label_batch, Delta) + \
+                       self.mu * self.loss_regularization(obs_batch, label_batch)
                 loss.backward()
                 self.optimizer.step()
                 train_epoch_loss.append(loss.item())

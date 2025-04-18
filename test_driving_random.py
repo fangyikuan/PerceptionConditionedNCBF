@@ -7,6 +7,30 @@ from posggym.envs.continuous.driving_continuous import ExponentialSensorModel
 import pickle
 from train_ncbf_new import NCBFTrainer
 from tqdm import trange
+import torch
+from torch.utils.data import Dataset
+from torch.utils.data import random_split, DataLoader
+import os
+from collections import Counter
+class TrajectoryDataset(Dataset):
+    def __init__(self, data_dict):
+        self.observations = torch.tensor(data_dict["observation"], dtype=torch.float32)
+        self.obs_diffs = torch.tensor(data_dict["observation_diff"], dtype=torch.float32)
+        self.actions = torch.tensor(data_dict["action"], dtype=torch.float32)
+        self.states = torch.tensor(data_dict["states"], dtype=torch.float32)
+        self.labels = torch.tensor(data_dict["label"], dtype=torch.float32)  # can be float or long for BCE/CrossEntropy
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        return {
+            "observation": self.observations[idx],
+            "observation_diff": self.obs_diffs[idx],
+            "action": self.actions[idx],
+            "state": self.states[idx],
+            "label": self.labels[idx]
+        }
 def generate_random_traj(env, num_traj, horizon=100, sleep_time=0.0, render=False):
     """
     Generate random trajectories using the environment's step function.
@@ -25,6 +49,7 @@ def generate_random_traj(env, num_traj, horizon=100, sleep_time=0.0, render=Fals
     agent_id = env.agents[0]  # Assumes single-agent for now
 
     trajectories = []
+    traj_lengths = []
     env._max_episode_steps = horizon
     for traj_idx in trange(num_traj):
         obs, info = env.reset(seed=None)  # Can pass specific seed for reproducibility
@@ -41,7 +66,7 @@ def generate_random_traj(env, num_traj, horizon=100, sleep_time=0.0, render=Fals
         for t in range(horizon):
             action = env.action_spaces[agent_id].sample()
             actions = {agent_id: action}
-            state = env.state[int(agent_id)].body
+            state = env.state[int(agent_id)].body[:3]
 
             step_result = env.step(actions)
             if len(step_result) == 6:
@@ -62,6 +87,7 @@ def generate_random_traj(env, num_traj, horizon=100, sleep_time=0.0, render=Fals
             trajectory["safe"].append(is_safe)
             trajectory["infos"].append(infos[agent_id])
 
+
             if render:
                 env.render()
                 time.sleep(sleep_time)
@@ -70,61 +96,107 @@ def generate_random_traj(env, num_traj, horizon=100, sleep_time=0.0, render=Fals
                 break
 
         trajectories.append(trajectory)
+        traj_lengths.append(len(trajectory["actions"]))
+    print("\n📊 Trajectory Length Distribution:")
+    length_counts = Counter(traj_lengths)
+    for length in sorted(length_counts):
+        bar = '█' * (length_counts[length] * 50 // num_traj)  # scale bar length
+        print(f"Length {length:3d}: {length_counts[length]:4d} | {bar}")
 
     return trajectories
 
 
-def build_dataset_from_env(env, num_traj, horizon, n_ignore=50):
+def build_dataset_from_env(env, num_traj, horizon, n_ignore=50, render=False, dump=True,
+                           reload_directory=None, balance_classes=False, save_path="env_dataset.pkl"):
     """Build dataset using posggym environment and random trajectories."""
-    from collections import deque
-    env.spec.max_episode_steps = horizon
-    agent_id = env.agents[0]
-    Xrefs = []
-    Urefs = []
 
-    # Generate trajectories
-    trajectories = generate_random_traj(env, num_traj=num_traj, horizon=horizon, render=True)
+    env.spec.max_episode_steps = horizon
+
+    if reload_directory is not None:
+        with open(reload_directory, "rb") as f:
+            trajectories = pickle.load(f)
+    else:
+        trajectories = generate_random_traj(env, num_traj=num_traj, horizon=horizon, render=render)
+
+    obs_data = []
+    obs_diff_data = []
+    action_data = []
+    state_data = []
+    safe_labels = []
 
     for traj in trajectories:
         obs = traj["observations"]
+        obs_diff = traj["observation_diff"]
         acts = traj["actions"]
+        states = traj["states"]
+        safe_flags = traj["safe"]
 
-        if len(acts) < n_ignore + 1:
-            continue
+        traj_len = len(acts)
 
-        Xrefs.append(obs)
-        Urefs.append(acts)
+        if traj_len > n_ignore + 1:
+            end_idx = traj_len - (n_ignore + 1)
+            obs_data.extend(obs[:end_idx])
+            obs_diff_data.extend(obs_diff[:end_idx])
+            action_data.extend(acts[:end_idx])
+            state_data.extend(states[:end_idx])
+            safe_labels.extend([True] * end_idx)
+        elif traj_len <= n_ignore and safe_flags[-1] == False:
+            obs_data.append(obs[-1])
+            obs_diff_data.append(obs_diff[-1])
+            action_data.append(acts[-1])
+            state_data.append(states[-1])
+            safe_labels.append(False)
 
-    data = []
-    for xref, uref in zip(Xrefs, Urefs):
-        for i in range(len(uref) - n_ignore):
-            data.append([xref[i], uref[i], [True]])  # Safe data
+    # Convert to NumPy arrays before indexing
+    obs_data = np.array(obs_data)
+    obs_diff_data = np.array(obs_diff_data)
+    action_data = np.array(action_data)
+    state_data = np.array(state_data)
+    safe_labels = np.array(safe_labels, dtype=bool)
 
-    # Generate unsafe points from outside observation bounds (approximate)
-    n_safe = int(np.floor(len(data) * 0.8))
-    obs_space = env.observation_spaces[agent_id]
-    act_space = env.action_spaces[agent_id]
+    if balance_classes:
+        safe_indices = np.where(safe_labels == True)[0]
+        unsafe_indices = np.where(safe_labels == False)[0]
+        min_class_size = min(len(safe_indices), len(unsafe_indices))
 
-    for _ in range(n_safe):
-        # Unsafe state: sample outside the space bounds
-        obs_low, obs_high = obs_space.low, obs_space.high
-        unsafe_state = np.random.uniform(low=obs_low - 1.0, high=obs_high + 1.0)
-        while np.all((unsafe_state >= obs_low) & (unsafe_state <= obs_high)):
-            unsafe_state = np.random.uniform(low=obs_low - 1.0, high=obs_high + 1.0)
+        np.random.shuffle(safe_indices)
+        np.random.shuffle(unsafe_indices)
 
-        unsafe_action = act_space.sample()
-        data.append([unsafe_state, unsafe_action, [False]])
+        keep_indices = np.concatenate([safe_indices[:min_class_size], unsafe_indices[:min_class_size]])
+        np.random.shuffle(keep_indices)
 
-    # Save dataset
-    with open("env_training_data.pkl", "wb") as f:
-        pickle.dump(data[:-1000], f)
+        obs_data = obs_data[keep_indices]
+        obs_diff_data = obs_diff_data[keep_indices]
+        action_data = action_data[keep_indices]
+        state_data = state_data[keep_indices]
+        safe_labels = safe_labels[keep_indices]
 
-    with open("env_test_data.pkl", "wb") as f:
-        pickle.dump(data[-1000:], f)
+        print(f"Balanced dataset to {len(keep_indices)} total samples ({min_class_size} per class).")
+    else:
+        print(f"Unbalanced dataset with {np.sum(safe_labels)} safe and {np.sum(~safe_labels)} unsafe samples.")
 
-    print(f"Saved {len(data[:-1000])} training samples and {len(data[-1000:])} test samples")
-    return data[:-1000], data[-1000:]
+    dataset_dict = {
+        "observation": obs_data,
+        "observation_diff": obs_diff_data,
+        "action": action_data,
+        "states": state_data,
+        "label": safe_labels
+    }
+
+    print(f"Final dataset size: {len(obs_data)} samples.")
+
+    # Save to disk if requested
+    if dump:
+        # os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        with open(save_path, "wb") as f:
+            pickle.dump(dataset_dict, f)
+        print(f"Dataset saved to: {save_path}")
+
+    return dataset_dict
 # Create the environment
+
+
+
 sensor_model = ExponentialSensorModel(beta=1.0)
 env = posggym.make(
     "DrivingContinuousRandom-v0",
@@ -146,12 +218,26 @@ print(f"Observation spaces: {env.observation_spaces}")
 # Reset the environment
 obs, info = env.reset()
 print(f"Initial observation: {obs.keys()}")
-raw_training_data, raw_test_data = build_dataset_from_env(env, num_traj=200, horizon=100)
+dataset_dict = build_dataset_from_env(env, num_traj=100, horizon=1000)
+# Wrap into PyTorch Dataset
+full_dataset = TrajectoryDataset(dataset_dict)
+
+# Split sizes
+train_size = int(0.8 * len(full_dataset))
+test_size = len(full_dataset) - train_size
+
+# Train/test split
+train_dataset, test_dataset = random_split(full_dataset, [train_size, test_size])
+
+# Wrap in DataLoaders
+train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+
 trainer = NCBFTrainer(
-    state_dim=37,
-    control_dim=2,
-    training_data=raw_training_data,
-    test_data=raw_test_data,
+    state_dim=env.observation_spaces["0"].shape[0],
+    control_dim=env.action_spaces["0"].shape[0],
+    training_data=train_loader,
+    test_data=test_loader,
     U_bounds=([-1, -1], [1, 1])
 )
 model, train_loss, test_loss = trainer.train()
