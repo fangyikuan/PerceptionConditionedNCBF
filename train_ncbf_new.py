@@ -9,10 +9,10 @@ from collect_data import DubinsCar, Hyperrectangle
 import os
 
 class CBFModel(nn.Module):
-    def __init__(self, state_dim):
+    def __init__(self, obs_dim):
         super(CBFModel, self).__init__()
         self.model = nn.Sequential(
-            nn.Linear(state_dim, 16),
+            nn.Linear(obs_dim, 16),
             nn.ReLU(),
             nn.Linear(16, 64),
             nn.ReLU(),
@@ -25,12 +25,12 @@ class CBFModel(nn.Module):
         return self.model(x)
 
 class NCBFTrainer:
-    def __init__(self, state_dim, control_dim, training_data, test_data, U_bounds,
-                 batchsize=128, total_epoch=20, lambda_param=1.0, mu=0.1, alpha=0.0, use_pgd=True):
+    def __init__(self, obs_dim, state_dim, control_dim, training_data, test_data, U_bounds,
+                 batchsize=32, total_epoch=20, lambda_param=1.0, mu=0.1, alpha=0.0, use_pgd=False):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
-
-        self.state_dim = state_dim
+        self.obs_dim = obs_dim # Obs_dim means the dim of NN input
+        self.state_dim = state_dim # State dim means the dim of "state" space in control problem
         self.control_dim = control_dim
         self.batchsize = batchsize
         self.total_epoch = total_epoch
@@ -41,7 +41,7 @@ class NCBFTrainer:
         self.eps = 1e-3
         self.U = Hyperrectangle(U_bounds[0], U_bounds[1], npy=False)
 
-        self.model = CBFModel(state_dim).to(self.device)
+        self.model = CBFModel(self.obs_dim+self.state_dim).to(self.device)
         self.dyn_model = DubinsCar()
 
         self.optimizer = optim.NAdam(self.model.parameters(), lr=0.01, betas=(0.9, 0.999), weight_decay=0.1)
@@ -74,47 +74,51 @@ class NCBFTrainer:
             x_dot += Delta
         return x_dot
 
-    def forward_invariance_func(self, x, A, B, u, Delta=None):
-        x_grad = x.clone().detach().requires_grad_(True)
+    def forward_invariance_func(self,  obs_b, obs_diff_b, state_b, action_b, A, B, Delta=None):
+        x_grad = obs_b.clone().detach().requires_grad_(True)
+        x_grad = torch.cat((x_grad, state_b), dim=-1)
         phi_x = self.model(x_grad)
         gradients = torch.autograd.grad(phi_x, x_grad, grad_outputs=torch.ones_like(phi_x), create_graph=True)[0]
-        x_dot = self.affine_dyn_batch(A, x, B, u, Delta)
+        x_dot = self.affine_dyn_batch(A, state_b, B, action_b, Delta)
+        x_dot = torch.cat([obs_diff_b, x_dot], dim=-1)
         phi_dot = torch.sum(gradients * x_dot, dim=1, keepdim=True)
-        return phi_dot + self.alpha * self.model(x)
+        return phi_dot + self.alpha * self.model(torch.cat([obs_b, state_b], dim=-1))
 
     def loss_naive_safeset(self, x, y_init):
-        y_init = y_init.squeeze(1)
+        # y_init = y_init.squeeze(1)
         phi_x = self.model(x).squeeze(1)
         return torch.mean(self.relu((2 * y_init - 1) * phi_x + 1e-6))
 
     def loss_regularization(self, x, y_init):
-        y_init = y_init.squeeze(1)
+        # y_init = y_init.squeeze(1)
         phi_x = self.model(x).squeeze(1)
         return torch.mean(self.sigmoid_fast((2 * y_init - 1) * phi_x))
 
-    def loss_naive_fi(self, x, A, B, u, y_init, Delta=None, epsilon=0.1):
-        y_init = y_init.squeeze(1)
+    def loss_naive_fi(self, obs_b, obs_diff_b, state_b, action_b, A, B, y_init, Delta=None, epsilon=0.1):
+        # y_init = y_init.squeeze(1)
         safe_indices = (y_init == 1).nonzero(as_tuple=True)[0]
         if len(safe_indices) == 0: return torch.tensor(0.0, device=self.device)
 
-        x_safe, u_safe = x[safe_indices], u[safe_indices]
+        obs_safe, obs_diff_safe, x_safe, u_safe= (obs_b[safe_indices], obs_diff_b[safe_indices], state_b[safe_indices],
+                                                  action_b[safe_indices])
         A_safe, B_safe = A[safe_indices], B[safe_indices]
         Delta_safe = Delta[safe_indices] if Delta is not None else None
 
         with torch.no_grad():
-            phi_x = self.model(x_safe)
+            phi_x = self.model(torch.cat([obs_safe, x_safe],dim=-1))
 
         boundary_indices = (torch.abs(phi_x) < epsilon).squeeze(1).nonzero(as_tuple=True)[0]
         if len(boundary_indices) == 0: return torch.tensor(0.0, device=self.device)
-
-        x_b, u_b = x_safe[boundary_indices], u_safe[boundary_indices]
+        obs_bd, obs_diff_bd,x_bd, u_bd = (obs_b[boundary_indices], obs_diff_b[boundary_indices], state_b[boundary_indices],
+                                                  action_b[boundary_indices])
+        # x_b, u_b = x_safe[boundary_indices], u_safe[boundary_indices]
         A_b, B_b = A_safe[boundary_indices], B_safe[boundary_indices]
         Delta_b = Delta_safe[boundary_indices] if Delta_safe is not None else None
 
         if self.use_pgd:
-            u_b = self.pgd_find_u_notce(x_b, A_b, B_b, u_b, Delta_b)
+            u_b = self.pgd_find_u_notce(x_bd, A_b, B_b, u_bd, Delta_b)
 
-        fi_vals = self.forward_invariance_func(x_b, A_b, B_b, u_b, Delta=Delta_b)
+        fi_vals = self.forward_invariance_func(obs_bd, obs_diff_bd, x_bd, u_bd, A_b, B_b, Delta=Delta_b)
         return torch.mean(self.relu(fi_vals + 1e-6))
 
     def pgd_find_u_notce(self, x, A, B, u_0, Delta=None, lr=1, num_iter=10):
@@ -155,13 +159,15 @@ class NCBFTrainer:
                 action_batch = batch["action"].to(self.device)
                 state_batch = batch["state"].to(self.device)
                 label_batch = batch["label"].to(self.device)
+                nn_input_batch = torch.cat([obs_batch, state_batch],dim=-1)
                 A, B, Delta = self.compute_dynamics_and_residuals(state_batch, action_batch)
                 if self.use_pgd:
                     u = self.pgd_find_u_notce(state_batch, A, B, action_batch, Delta)
                 self.optimizer.zero_grad()
-                loss = self.loss_naive_safeset(obs_batch, label_batch) + \
-                       self.lambda_param * self.loss_naive_fi(obs_batch, A, B, action_batch, label_batch, Delta) + \
-                       self.mu * self.loss_regularization(obs_batch, label_batch)
+                loss = self.loss_naive_safeset(nn_input_batch, label_batch) + \
+                       self.lambda_param * self.loss_naive_fi(obs_batch, obs_diff_batch, state_batch, action_batch, A,
+                                                              B, label_batch, Delta ) + \
+                       self.mu * self.loss_regularization(nn_input_batch, label_batch)
                 loss.backward()
                 self.optimizer.step()
                 train_epoch_loss.append(loss.item())
@@ -171,11 +177,18 @@ class NCBFTrainer:
 
             self.model.eval()
             test_epoch_loss = []
-            for x, u, y in tqdm(self.test_loader, desc=f"Test Epoch {epoch}"):
-                A, B, Delta = self.compute_dynamics_and_residuals(x, u)
-                loss = self.loss_naive_safeset(x, y) + \
-                       self.lambda_param * self.loss_naive_fi(x, A, B, u, y, Delta) + \
-                       self.mu * self.loss_regularization(x, y)
+            for batch in tqdm(self.test_loader, desc=f"Test Epoch {epoch}"):
+                obs_batch = batch["observation"].to(self.device)
+                obs_diff_batch = batch["observation_diff"].to(self.device)
+                action_batch = batch["action"].to(self.device)
+                state_batch = batch["state"].to(self.device)
+                label_batch = batch["label"].to(self.device)
+                nn_input_batch = torch.cat([obs_batch, state_batch], dim=-1)
+                A, B, Delta = self.compute_dynamics_and_residuals(state_batch, action_batch)
+                loss = self.loss_naive_safeset(nn_input_batch, label_batch) + \
+                       self.lambda_param * self.loss_naive_fi(obs_batch, obs_diff_batch, state_batch, action_batch, A,
+                                                              B, label_batch, Delta) + \
+                       self.mu * self.loss_regularization(nn_input_batch, label_batch)
                 test_epoch_loss.append(loss.item())
             avg_test = np.mean(test_epoch_loss)
             test_losses.append(avg_test)

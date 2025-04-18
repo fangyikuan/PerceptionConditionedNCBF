@@ -1,4 +1,5 @@
 """Test script for DrivingContinuousRandom environment."""
+from imp import reload
 
 import posggym
 import numpy as np
@@ -114,76 +115,76 @@ def build_dataset_from_env(env, num_traj, horizon, n_ignore=50, render=False, du
 
     if reload_directory is not None:
         with open(reload_directory, "rb") as f:
-            trajectories = pickle.load(f)
+            dataset_dict = pickle.load(f)
     else:
         trajectories = generate_random_traj(env, num_traj=num_traj, horizon=horizon, render=render)
 
-    obs_data = []
-    obs_diff_data = []
-    action_data = []
-    state_data = []
-    safe_labels = []
+        obs_data = []
+        obs_diff_data = []
+        action_data = []
+        state_data = []
+        safe_labels = []
 
-    for traj in trajectories:
-        obs = traj["observations"]
-        obs_diff = traj["observation_diff"]
-        acts = traj["actions"]
-        states = traj["states"]
-        safe_flags = traj["safe"]
+        for traj in trajectories:
+            obs = traj["observations"]
+            obs_diff = traj["observation_diff"]
+            acts = traj["actions"]
+            states = traj["states"]
+            safe_flags = traj["safe"]
 
-        traj_len = len(acts)
+            traj_len = len(acts)
 
-        if traj_len > n_ignore + 1:
-            end_idx = traj_len - (n_ignore + 1)
-            obs_data.extend(obs[:end_idx])
-            obs_diff_data.extend(obs_diff[:end_idx])
-            action_data.extend(acts[:end_idx])
-            state_data.extend(states[:end_idx])
-            safe_labels.extend([True] * end_idx)
-        elif traj_len <= n_ignore and safe_flags[-1] == False:
-            obs_data.append(obs[-1])
-            obs_diff_data.append(obs_diff[-1])
-            action_data.append(acts[-1])
-            state_data.append(states[-1])
-            safe_labels.append(False)
+            if traj_len > n_ignore + 1:
+                end_idx = traj_len - (n_ignore + 1)
+                obs_data.extend(obs[:end_idx])
+                obs_diff_data.extend(obs_diff[:end_idx])
+                action_data.extend(acts[:end_idx])
+                state_data.extend(states[:end_idx])
+                safe_labels.extend([True] * end_idx)
+            elif traj_len <= n_ignore and safe_flags[-1] == False:
+                obs_data.append(obs[-1])
+                obs_diff_data.append(obs_diff[-1])
+                action_data.append(acts[-1])
+                state_data.append(states[-1])
+                safe_labels.append(False)
 
-    # Convert to NumPy arrays before indexing
-    obs_data = np.array(obs_data)
-    obs_diff_data = np.array(obs_diff_data)
-    action_data = np.array(action_data)
-    state_data = np.array(state_data)
-    safe_labels = np.array(safe_labels, dtype=bool)
+        # Convert to NumPy arrays before indexing
+        obs_data = np.array(obs_data)
+        obs_diff_data = np.array(obs_diff_data)
+        action_data = np.array(action_data)
+        state_data = np.array(state_data)
+        safe_labels = np.array(safe_labels, dtype=bool)
 
-    if balance_classes:
-        safe_indices = np.where(safe_labels == True)[0]
-        unsafe_indices = np.where(safe_labels == False)[0]
-        min_class_size = min(len(safe_indices), len(unsafe_indices))
+        if balance_classes:
+            safe_indices = np.where(safe_labels == True)[0]
+            unsafe_indices = np.where(safe_labels == False)[0]
+            min_class_size = min(len(safe_indices), len(unsafe_indices))
 
-        np.random.shuffle(safe_indices)
-        np.random.shuffle(unsafe_indices)
+            np.random.shuffle(safe_indices)
+            np.random.shuffle(unsafe_indices)
 
-        keep_indices = np.concatenate([safe_indices[:min_class_size], unsafe_indices[:min_class_size]])
-        np.random.shuffle(keep_indices)
+            keep_indices = np.concatenate([safe_indices[:min_class_size], unsafe_indices[:min_class_size]])
+            np.random.shuffle(keep_indices)
 
-        obs_data = obs_data[keep_indices]
-        obs_diff_data = obs_diff_data[keep_indices]
-        action_data = action_data[keep_indices]
-        state_data = state_data[keep_indices]
-        safe_labels = safe_labels[keep_indices]
+            obs_data = obs_data[keep_indices]
+            obs_diff_data = obs_diff_data[keep_indices]
+            action_data = action_data[keep_indices]
+            state_data = state_data[keep_indices]
+            safe_labels = safe_labels[keep_indices]
 
-        print(f"Balanced dataset to {len(keep_indices)} total samples ({min_class_size} per class).")
-    else:
-        print(f"Unbalanced dataset with {np.sum(safe_labels)} safe and {np.sum(~safe_labels)} unsafe samples.")
+            print(f"Balanced dataset to {len(keep_indices)} total samples ({min_class_size} per class).")
+        else:
+            print(f"Unbalanced dataset with {np.sum(safe_labels)} safe and {np.sum(~safe_labels)} unsafe samples.")
 
-    dataset_dict = {
-        "observation": obs_data,
-        "observation_diff": obs_diff_data,
-        "action": action_data,
-        "states": state_data,
-        "label": safe_labels
-    }
+        dataset_dict = {
+            "observation": obs_data,
+            "observation_diff": obs_diff_data,
+            "action": action_data,
+            "states": state_data,
+            "label": safe_labels
+        }
 
-    print(f"Final dataset size: {len(obs_data)} samples.")
+    print(f"Final dataset size: {len(dataset_dict['observation'])} samples.")
 
     # Save to disk if requested
     if dump:
@@ -218,7 +219,9 @@ print(f"Observation spaces: {env.observation_spaces}")
 # Reset the environment
 obs, info = env.reset()
 print(f"Initial observation: {obs.keys()}")
-dataset_dict = build_dataset_from_env(env, num_traj=100, horizon=1000)
+dataset_dict = build_dataset_from_env(env, num_traj=10000, horizon=1000,
+                                      reload_directory="./env_dataset.pkl",
+                                      dump=False)
 # Wrap into PyTorch Dataset
 full_dataset = TrajectoryDataset(dataset_dict)
 
@@ -234,7 +237,8 @@ train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
 trainer = NCBFTrainer(
-    state_dim=env.observation_spaces["0"].shape[0],
+    obs_dim = env.observation_spaces["0"].shape[0],
+    state_dim=3,
     control_dim=env.action_spaces["0"].shape[0],
     training_data=train_loader,
     test_data=test_loader,
