@@ -4,15 +4,21 @@ from imp import reload
 import posggym
 import numpy as np
 import time
+
+from collect_data import DubinsCar
 from posggym.envs.continuous.driving_continuous import ExponentialSensorModel
 import pickle
-from train_ncbf_new import NCBFTrainer
+from train_ncbf_new import NCBFTrainer, CBFModel
 from tqdm import trange
 import torch
 from torch.utils.data import Dataset
 from torch.utils.data import random_split, DataLoader
 import os
 from collections import Counter
+import cvxpy as cp
+train = False
+load_dir = "./cbf_model_epoch_10.pt"
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 class TrajectoryDataset(Dataset):
     def __init__(self, data_dict):
         self.observations = torch.tensor(data_dict["observation"], dtype=torch.float32)
@@ -196,13 +202,185 @@ def build_dataset_from_env(env, num_traj, horizon, n_ignore=50, render=False, du
     return dataset_dict
 # Create the environment
 
+class PIDGoalController:
+    """
+    Nominal goal‑seeking PID controller for the DrivingContinuousRandom‑v0 car.
 
+    Control     : u = [ ω  (rad/s clockwise +),
+                        a  (m/s² forward    +) ]
+
+    Call  `u = controller(state, dt)`  each step.
+    """
+    # --------------------------------------------------------------------- #
+    def __init__(
+        self,
+        kp_lin=0.002,  kd_lin=0.01,  ki_lin=0.02,
+        kp_ang=1.0,  kd_ang=0.0,  ki_ang=0.0,
+        a_bounds=(-0.25,  0.25),
+        w_bounds=(-np.pi/4,  np.pi/4),
+        accel_cutoff=np.deg2rad(90),        # no forward accel if |heading err|>90°
+        int_clip=10.0                       # anti‑wind‑up limit
+    ):
+        self.kp_lin, self.kd_lin, self.ki_lin = kp_lin, kd_lin, ki_lin
+        self.kp_ang, self.kd_ang, self.ki_ang = kp_ang, kd_ang, ki_ang
+
+        self.a_min, self.a_max = a_bounds
+        self.w_min, self.w_max = w_bounds
+
+        self.cutoff      = accel_cutoff
+        self.int_clip    = int_clip
+        self.i_lin       = 0.0
+        self.i_ang       = 0.0
+        self.stuck_steps = 0                # for simple wall‑recovery
+
+    # --------------------------------------------------------------------- #
+    def __call__(self, s, dt=0.1):
+        """
+        Args
+        ----
+        s  : np.ndarray shape (11,) vehicle state
+              [x, y, θ(clockwise+), vx, vy, ω, gx, gy, reached, crashed, …]
+        dt : timestep [s]
+
+        Returns
+        -------
+        u : np.ndarray(2,)  → [ω, a]
+        """
+        x, y, theta_cw = s[0:3]
+        vx, vy         = s[3:5]
+        omega_cw       = s[5]
+        gx, gy         = s[6:8]
+
+        # ---------- geometry ------------------------------------------------
+        dx, dy    = gx - x, gy - y
+        dist      = np.hypot(dx, dy)
+
+        # goal direction in *mathematical* (CCW+) frame
+        goal_dir_ccw = np.arctan2(dy, dx)
+        # convert to CW‑positive angle
+        goal_dir_cw  = goal_dir_ccw
+        # goal_dir_cw = -np.pi/4
+        # heading error in same (CW) sign convention, wrap to [-π, π]
+        heading_err  = self._wrap(goal_dir_cw - theta_cw)
+
+        # forward velocity (positive if moving along +heading)
+        v_forward =  vx * np.cos(theta_cw) - vy * np.sin(theta_cw)
+
+        # ---------- integral terms (anti‑wind‑up) ---------------------------
+        self.i_lin = np.clip(self.i_lin + dist        * dt, -self.int_clip, self.int_clip)
+        self.i_ang = np.clip(self.i_ang + heading_err * dt, -self.int_clip, self.int_clip)
+
+        # ---------- PID -----------------------------------------------------
+        # angular speed (ω, clockwise +)
+        # w = ( self.kp_ang * heading_err
+        #     - self.kd_ang * omega_cw
+        #     + self.ki_ang * self.i_ang )
+        w =  self.kp_ang * heading_err
+        # linear acceleration (a, forward +)
+        a = ( self.kp_lin * dist
+            - self.kd_lin * v_forward )
+
+
+        # ---------- heading‑aware throttle clamp ----------------------------
+        # if abs(heading_err) > self.cutoff:        # > 90° off → no acceleration
+        #     a = 0.0
+        # else:                                     # smooth scaling (cosine)
+        #     a *= np.cos(heading_err)
+
+        # ---------- simple stuck recovery -----------------------------------
+        # if abs(v_forward) < 0.05:
+        #     self.stuck_steps += 1
+        # else:
+        #     self.stuck_steps  = 0
+        #
+        # if self.stuck_steps > 15:                 # ~1.5 s @ 10 Hz
+        #     a = -1.0                               # back up
+        #     w = np.sign(heading_err) * 4.0         # spin toward goal
+
+        # ---------- saturate & return ---------------------------------------
+        w = np.clip(w, self.w_min, self.w_max)
+        a = np.clip(a, self.a_min, self.a_max)
+        print(f"Current Heading is{theta_cw}, current heading error is {heading_err}")
+        print(f"Current Goal heading is{goal_dir_ccw}, Goal heading actual is {goal_dir_cw}")
+        print(f"dx={dx}, dy={dy}")
+        print(f"w is {w}")
+        return np.array([w, a])
+
+    # --------------------------------------------------------------------- #
+    @staticmethod
+    def _wrap(angle):
+        """wrap to [-π, π] with clockwise‑positive sign"""
+        return (angle + np.pi) % (2*np.pi) - np.pi
+# ──── QP‑filter class ────────────────────────────────────────────────────────────
+class CBF_QP_Filter:
+    """
+    Quadratic‑program controller  (min ½‖u-u_nom‖²  s.t.  CBF + box bounds).
+    * Assumes control‑affine system  ẋ = f(x) + g(x) u,  and g(x)=I on (x,y) dims.
+    * Works with any torch nn.Module producing scalar h(x).
+    """
+    from collect_data import DubinsCar
+    def __init__(self,
+                 cbf_model: torch.nn.Module,
+                 control_dim=2,
+                 u_lower=(-np.pi/4., -0.25),
+                 u_upper=( np.pi/4.,  0.25),
+                 alpha=10.):
+        self.cbf   = cbf_model.eval()
+        self.udim  = control_dim
+        self.u_lo  = torch.tensor(u_lower)
+        self.u_hi  = torch.tensor(u_upper)
+        self.alpha = alpha
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.norm_controller = PIDGoalController()
+        self.dyn_model = DubinsCar()
+
+    @torch.no_grad()
+    def safe_action(self, states:np.ndarray, nn_input:np.ndarray):
+        """
+        state:  shape (state_dim,) ‑‑ raw observation of *one* agent.
+        returns: numpy array (control_dim,)
+        """
+        with torch.enable_grad():
+            x = torch.tensor(nn_input, dtype=torch.float32, requires_grad=True).to(self.device)
+
+            # --- CBF value and gradient  (h,  ∂h/∂x) ---------------------------------
+            h = self.cbf(x.unsqueeze(0)).squeeze()           # scalar
+
+            dh_dx, = torch.autograd.grad(h, x, retain_graph=False)
+
+        # Derivatives for affine system  (f ≈ 0, g = I on (x,y)):
+        L_f_h = 0.0                                      # we ignore / set to 0
+        L_g_h = dh_dx[0:self.udim]                       # take grad wrt x,y
+
+        # Move everything to NumPy for cvxpy
+        u_nom = self.norm_controller(states)
+        A_cbf = -L_g_h.cpu().numpy().reshape(1, -1)      # A u ≤ b
+        b_cbf =  (L_f_h + self.alpha * h).cpu().numpy()
+
+        # --- build small dense QP ------------------------------------------------
+        u   = cp.Variable(self.udim)
+        Q   = np.eye(self.udim)
+        obj = 0.5*cp.quad_form(u - u_nom, Q)
+        constraints = [
+            # A_cbf @ u <= b_cbf,               # CBF
+            u >= self.u_lo.numpy(),           # box bounds
+            u <= self.u_hi.numpy(),
+        ]
+        prob = cp.Problem(cp.Minimize(obj), constraints)
+        prob.solve(warm_start=True)
+
+        # Fallback if the problem is infeasible / solver failed
+        if prob.status not in ("optimal", "optimal_inaccurate"):
+            return u_nom.astype(np.float32)
+
+        return u.value.astype(np.float32)
+        # return u_nom.astype(np.float32)
 
 sensor_model = ExponentialSensorModel(beta=1.0)
 env = posggym.make(
     "DrivingContinuousRandom-v0",
     render_mode="human",
-    obstacle_density=0.2,  # Increase density for more obstacles
+    obstacle_density=0.0,  # Increase density for more obstacles
     obstacle_radius_range=(0.4, 0.8),  # Larger obstacles
     random_seed=42,  # Set seed for reproducibility
     sensor_model=sensor_model,  # Use our exponential sensor model
@@ -219,32 +397,60 @@ print(f"Observation spaces: {env.observation_spaces}")
 # Reset the environment
 obs, info = env.reset()
 print(f"Initial observation: {obs.keys()}")
-dataset_dict = build_dataset_from_env(env, num_traj=10000, horizon=1000,
-                                      reload_directory="./env_dataset.pkl",
-                                      dump=False)
-# Wrap into PyTorch Dataset
-full_dataset = TrajectoryDataset(dataset_dict)
+if train:
+    dataset_dict = build_dataset_from_env(env, num_traj=10000, horizon=1000,
+                                          reload_directory="./env_dataset.pkl",
+                                          dump=False)
+    # Wrap into PyTorch Dataset
+    full_dataset = TrajectoryDataset(dataset_dict)
 
-# Split sizes
-train_size = int(0.8 * len(full_dataset))
-test_size = len(full_dataset) - train_size
+    # Split sizes
+    train_size = int(0.8 * len(full_dataset))
+    test_size = len(full_dataset) - train_size
 
-# Train/test split
-train_dataset, test_dataset = random_split(full_dataset, [train_size, test_size])
+    # Train/test split
+    train_dataset, test_dataset = random_split(full_dataset, [train_size, test_size])
 
-# Wrap in DataLoaders
-train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    # Wrap in DataLoaders
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
-trainer = NCBFTrainer(
-    obs_dim = env.observation_spaces["0"].shape[0],
-    state_dim=3,
-    control_dim=env.action_spaces["0"].shape[0],
-    training_data=train_loader,
-    test_data=test_loader,
-    U_bounds=([-1, -1], [1, 1])
-)
-model, train_loss, test_loss = trainer.train()
+    trainer = NCBFTrainer(
+        obs_dim = env.observation_spaces["0"].shape[0],
+        state_dim=3,
+        control_dim=env.action_spaces["0"].shape[0],
+        training_data=train_loader,
+        test_data=test_loader,
+        U_bounds=([-1, -1], [1, 1]),
+        total_epoch=10
+    )
+    model, train_loss, test_loss = trainer.train()
+else:
+    model = CBFModel(env.observation_spaces["0"].shape[0]+3).to(device)
+    state_dict = torch.load(load_dir, map_location=device)  # "cuda:0" if you like
+    model.load_state_dict(state_dict)
+    model.eval()
+
+cbf_filter = CBF_QP_Filter(model, control_dim=2)
+
+obs, _ = env.reset()
+for t in range(1000):
+    nn_ipt = np.concatenate([obs["0"],env.state[0].body[:3]])
+    states = np.zeros((8,))
+    states[:6] = env.state[0].body
+    states[6:8] = env.state[0].dest_coord
+    # nn_ipt = torch.from_numpy(nn_ipt).to(device).float()
+    u_safe = cbf_filter.safe_action(states,nn_ipt)
+    print(f"u_safe: {u_safe} is")
+    actions = {"0": u_safe}
+    step_result = env.step(actions)
+    obs, rewards, terminations, truncations, _, infos = step_result
+    # state = env.state[0].body[:3]
+    env.render()
+    if terminations["0"] or truncations["0"]:
+        break
+    time.sleep(0.1)
+env.close()
 # Run a few random steps
 # for i in range(200):
 #     # Sample random actions for all agents
@@ -285,4 +491,4 @@ model, train_loss, test_loss = trainer.train()
 #         obs, info = env.reset()
 
 # Close the environment
-env.close()
+# env.close()

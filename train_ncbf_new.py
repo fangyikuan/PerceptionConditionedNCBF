@@ -12,12 +12,16 @@ class CBFModel(nn.Module):
     def __init__(self, obs_dim):
         super(CBFModel, self).__init__()
         self.model = nn.Sequential(
+            # nn.LayerNorm(obs_dim),
             nn.Linear(obs_dim, 16),
             nn.ReLU(),
+
             nn.Linear(16, 64),
             nn.ReLU(),
+
             nn.Linear(64, 16),
             nn.ReLU(),
+
             nn.Linear(16, 1)
         )
 
@@ -26,7 +30,7 @@ class CBFModel(nn.Module):
 
 class NCBFTrainer:
     def __init__(self, obs_dim, state_dim, control_dim, training_data, test_data, U_bounds,
-                 batchsize=32, total_epoch=20, lambda_param=1.0, mu=0.1, alpha=0.0, use_pgd=False):
+                 batchsize=32, total_epoch=20, lambda_param=1.0, mu=1.0, alpha=0.1, use_pgd=False):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
         self.obs_dim = obs_dim # Obs_dim means the dim of NN input
@@ -164,13 +168,18 @@ class NCBFTrainer:
                 if self.use_pgd:
                     u = self.pgd_find_u_notce(state_batch, A, B, action_batch, Delta)
                 self.optimizer.zero_grad()
-                loss = self.loss_naive_safeset(nn_input_batch, label_batch) + \
-                       self.lambda_param * self.loss_naive_fi(obs_batch, obs_diff_batch, state_batch, action_batch, A,
-                                                              B, label_batch, Delta ) + \
-                       self.mu * self.loss_regularization(nn_input_batch, label_batch)
+                safe_loss = self.loss_naive_safeset(nn_input_batch, label_batch)
+                fi_loss = self.loss_naive_fi(obs_batch, obs_diff_batch, state_batch, action_batch, A,
+                                                              B, label_batch, Delta )
+                reg_loss = self.loss_regularization(nn_input_batch, label_batch)
+                loss = safe_loss + \
+                       self.lambda_param * fi_loss+ \
+                       self.mu * reg_loss
+                # print(f"current safe loss is {safe_loss}, fi loss is {fi_loss}, reg loss is {reg_loss}")
                 loss.backward()
                 self.optimizer.step()
                 train_epoch_loss.append(loss.item())
+            print(f"current safe loss is {safe_loss}, fi loss is {fi_loss}, reg loss is {reg_loss}")
             self.scheduler.step()
             avg_train = np.mean(train_epoch_loss)
             train_losses.append(avg_train)
