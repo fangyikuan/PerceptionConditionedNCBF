@@ -327,15 +327,17 @@ class CBF_QP_Filter:
                  alpha=10.):
         self.cbf   = cbf_model.eval()
         self.udim  = control_dim
+        self.xdim  = 3
         self.u_lo  = torch.tensor(u_lower)
         self.u_hi  = torch.tensor(u_upper)
         self.alpha = alpha
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.norm_controller = PIDGoalController()
         self.dyn_model = DubinsCar()
+        self.alpha = 1
 
     @torch.no_grad()
-    def safe_action(self, states:np.ndarray, nn_input:np.ndarray):
+    def safe_action(self, states:np.ndarray, nn_input:np.ndarray, diff_perception:np.ndarray):
         """
         state:  shape (state_dim,) ‑‑ raw observation of *one* agent.
         returns: numpy array (control_dim,)
@@ -349,20 +351,25 @@ class CBF_QP_Filter:
             dh_dx, = torch.autograd.grad(h, x, retain_graph=False)
 
         # Derivatives for affine system  (f ≈ 0, g = I on (x,y)):
-        L_f_h = 0.0                                      # we ignore / set to 0
-        L_g_h = dh_dx[0:self.udim]                       # take grad wrt x,y
-
+        dh_p = dh_dx[:-self.xdim].cpu().numpy()
+        dh_x = dh_dx[-self.xdim:].cpu().numpy()
+        dh_p = dh_p.reshape(1, -1)
+        dh_x = dh_x.reshape(1, -1)
         # Move everything to NumPy for cvxpy
-        u_nom = self.norm_controller(states)
-        A_cbf = -L_g_h.cpu().numpy().reshape(1, -1)      # A u ≤ b
-        b_cbf =  (L_f_h + self.alpha * h).cpu().numpy()
+        u_nom = self.norm_controller(states).reshape(-1,1)
+        A, B = self.dyn_model.jacobian(x=states[:3], u=u_nom)
+        A = A.squeeze().cpu().numpy()
+        B = B.squeeze().cpu().numpy()
+        A_cbf = dh_x @ B
+        B_cbf = dh_p @ diff_perception.reshape(-1,1) + dh_x @ A @ states[:3].reshape(-1,1) + self.alpha * h.item()
+        u_nom = u_nom.reshape(-1)
 
         # --- build small dense QP ------------------------------------------------
         u   = cp.Variable(self.udim)
         Q   = np.eye(self.udim)
         obj = 0.5*cp.quad_form(u - u_nom, Q)
         constraints = [
-            # A_cbf @ u <= b_cbf,               # CBF
+            A_cbf @ u <= -B_cbf,               # CBF
             u >= self.u_lo.numpy(),           # box bounds
             u <= self.u_hi.numpy(),
         ]
@@ -380,7 +387,7 @@ sensor_model = ExponentialSensorModel(beta=1.0)
 env = posggym.make(
     "DrivingContinuousRandom-v0",
     render_mode="human",
-    obstacle_density=0.0,  # Increase density for more obstacles
+    obstacle_density=0.1,  # Increase density for more obstacles
     obstacle_radius_range=(0.4, 0.8),  # Larger obstacles
     random_seed=42,  # Set seed for reproducibility
     sensor_model=sensor_model,  # Use our exponential sensor model
@@ -434,17 +441,20 @@ else:
 cbf_filter = CBF_QP_Filter(model, control_dim=2)
 
 obs, _ = env.reset()
+last_obs = np.ones_like(obs["0"])*5
 for t in range(1000):
     nn_ipt = np.concatenate([obs["0"],env.state[0].body[:3]])
     states = np.zeros((8,))
     states[:6] = env.state[0].body
     states[6:8] = env.state[0].dest_coord
     # nn_ipt = torch.from_numpy(nn_ipt).to(device).float()
-    u_safe = cbf_filter.safe_action(states,nn_ipt)
+    u_safe = cbf_filter.safe_action(states,nn_ipt, obs["0"] - last_obs)
+    last_obs = obs["0"]
     print(f"u_safe: {u_safe} is")
     actions = {"0": u_safe}
     step_result = env.step(actions)
     obs, rewards, terminations, truncations, _, infos = step_result
+
     # state = env.state[0].body[:3]
     env.render()
     if terminations["0"] or truncations["0"]:
