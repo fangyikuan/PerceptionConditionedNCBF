@@ -12,16 +12,21 @@ class CBFModel(nn.Module):
     def __init__(self, obs_dim):
         super(CBFModel, self).__init__()
         self.model = nn.Sequential(
-            # nn.LayerNorm(obs_dim),
+            nn.LayerNorm(obs_dim),
             nn.Linear(obs_dim, 16),
             nn.ReLU(),
-
+            nn.LayerNorm(16),
             nn.Linear(16, 64),
             nn.ReLU(),
-
+            nn.LayerNorm(64),
+            nn.Linear(64, 128),
+            nn.ReLU(),
+            nn.LayerNorm(128),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.LayerNorm(64),
             nn.Linear(64, 16),
             nn.ReLU(),
-
             nn.Linear(16, 1)
         )
 

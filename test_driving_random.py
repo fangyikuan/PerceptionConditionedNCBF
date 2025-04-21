@@ -16,7 +16,7 @@ from torch.utils.data import random_split, DataLoader
 import os
 from collections import Counter
 import cvxpy as cp
-train = False
+train = True
 load_dir = "./cbf_model_epoch_10.pt"
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 class TrajectoryDataset(Dataset):
@@ -387,7 +387,7 @@ sensor_model = ExponentialSensorModel(beta=1.0)
 env = posggym.make(
     "DrivingContinuousRandom-v0",
     render_mode="human",
-    obstacle_density=0.1,  # Increase density for more obstacles
+    obstacle_density=0.2,  # Increase density for more obstacles
     obstacle_radius_range=(0.4, 0.8),  # Larger obstacles
     random_seed=42,  # Set seed for reproducibility
     sensor_model=sensor_model,  # Use our exponential sensor model
@@ -428,8 +428,8 @@ if train:
         control_dim=env.action_spaces["0"].shape[0],
         training_data=train_loader,
         test_data=test_loader,
-        U_bounds=([-1, -1], [1, 1]),
-        total_epoch=10
+        U_bounds=([-np.pi/4, -0.25], [np.pi, 0.25]),
+        total_epoch=20
     )
     model, train_loss, test_loss = trainer.train()
 else:
@@ -459,46 +459,5 @@ for t in range(1000):
     env.render()
     if terminations["0"] or truncations["0"]:
         break
-    time.sleep(0.1)
+    time.sleep(0.01)
 env.close()
-# Run a few random steps
-# for i in range(200):
-#     # Sample random actions for all agents
-#     actions = {agent: env.action_spaces[agent].sample() for agent in env.agents}
-#
-#     # Step the environment
-#     step_result = env.step(actions)
-#
-#     # Unpack the step result based on its structure
-#     if isinstance(step_result, tuple) and len(step_result) == 6:
-#         # Format: (obs, rewards, terminations, truncations, done, infos)
-#         next_obs, rewards, terminations, truncations, _, infos = step_result
-#     else:
-#         # Standard format: (obs, rewards, terminations, truncations, infos)
-#         next_obs, rewards, terminations, truncations, infos = step_result
-#
-#     # Print some information (only every 10 steps to avoid too much output)
-#     if i % 10 == 0:
-#         print(f"\nStep {i}:")
-#         print(f"Rewards: {rewards}")
-#         print(f"Terminations: {terminations}")
-#         print(f"Truncations: {truncations}")
-#         print(f"Info: {infos}")
-#
-#     # Check for collisions and print them
-#     for agent_id, info in infos.items():
-#         if 'outcome' in info and hasattr(info['outcome'], 'value') and info['outcome'].value == -1:
-#             print(f"\nCOLLISION DETECTED at step {i} for agent {agent_id}!")
-#             print(f"Reward: {rewards[agent_id]}")
-#
-#     # Slow down the rendering
-#     env.render()
-#     time.sleep(0.1)
-#
-#     # Check if all agents are done
-#     if all(terminations.values()) or all(truncations.values()):
-#         print("\nEpisode finished, resetting environment")
-#         obs, info = env.reset()
-
-# Close the environment
-# env.close()
