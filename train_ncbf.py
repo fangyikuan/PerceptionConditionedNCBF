@@ -11,7 +11,7 @@ from collect_data import DubinsCar, Hyperrectangle
 
 # Check if GPU is available
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+# print(f"Using device: {device}")
 
 
 def f_batch(A, x):

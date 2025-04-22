@@ -37,7 +37,7 @@ class NCBFTrainer:
     def __init__(self, obs_dim, state_dim, control_dim, training_data, test_data, U_bounds,
                  batchsize=32, total_epoch=20, lambda_param=1.0, mu=1.0, alpha=0.1, use_pgd=False):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        print(f"Using device: {self.device}")
+        # print(f"Using device: {self.device}")
         self.obs_dim = obs_dim # Obs_dim means the dim of NN input
         self.state_dim = state_dim # State dim means the dim of "state" space in control problem
         self.control_dim = control_dim

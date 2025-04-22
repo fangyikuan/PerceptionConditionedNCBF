@@ -7,7 +7,7 @@ import random
 import os, torch 
 # Check if GPU is available
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {device}")
+# print(f"Using device: {device}")
 
 # Define the hyperrectangle class (similar to LazySets.Hyperrectangle in Julia)
 class Hyperrectangle:
