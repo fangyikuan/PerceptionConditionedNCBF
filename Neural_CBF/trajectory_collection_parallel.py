@@ -16,49 +16,58 @@ def _collect_single_traj(args):
     Returns:
         trajectory dict and its length
     """
-    env_kwargs, horizon, seed = args
-    env_kwargs["render_mode"] = None
-    env = posggym.make(**env_kwargs)
-    obs, info = env.reset(seed=seed)
-    agent_id = env.agents[0]
-    env._max_episode_steps = horizon
-    trajectory = {
-        "observations": [obs[agent_id]],
-        "observation_diff": [np.zeros_like(obs[agent_id])],
-        "actions": [],
-        "rewards": [],
-        "states": [],
-        "safe": [],
-        "infos": [info[agent_id]],
-    }
+    try:
+        env_kwargs, horizon, seed = args
+        env_kwargs["render_mode"] = None
+        env = posggym.make(**env_kwargs)
+        obs, info = env.reset(seed=seed)
+        agent_id = env.agents[0]
+        env._max_episode_steps = horizon
+        trajectory = {
+            "observations": [obs[agent_id]],
+            "observation_diff": [np.zeros_like(obs[agent_id])],
+            "actions": [],
+            "rewards": [],
+            "states": [],
+            "safe": [],
+            "infos": [info[agent_id]],
+        }
+        action_rng = np.random.default_rng()
+        for t in range(horizon):
+            space = env.action_spaces[agent_id]
+            low, high = space.low, space.high
+            low[1] = 0 # Limit the robot to only go forward
+            action = action_rng.random(size=low.shape) * (high - low) + low
+            # action = env.action_spaces[agent_id].sample() # angular vel, linear acc
+            actions = {agent_id: action}
+            state = env.state[int(agent_id)].body[:5] # [x,y,theta,vx,vy]
 
-    for t in range(horizon):
-        action = env.action_spaces[agent_id].sample() # angular vel, linear acc
-        actions = {agent_id: action}
-        state = env.state[int(agent_id)].body[:3]
+            step = env.step(actions)
+            if len(step) == 6:
+                next_obs, rewards, terminations, truncations, _, infos = step
+            else:
+                next_obs, rewards, terminations, truncations, infos = step
 
-        step = env.step(actions)
-        if len(step) == 6:
-            next_obs, rewards, terminations, truncations, _, infos = step
-        else:
-            next_obs, rewards, terminations, truncations, infos = step
+            obs_diff = next_obs[agent_id] - trajectory["observations"][-1]
+            crashed = env.state[int(agent_id)].status[1]
+            is_safe = (crashed == 0)
+            action = action[::-1] # linear acc,  angular vel
+            trajectory["actions"].append(action)
+            trajectory["rewards"].append(rewards[agent_id])
+            trajectory["states"].append(state)
+            trajectory["safe"].append(is_safe)
+            trajectory["infos"].append(infos[agent_id])
 
-        obs_diff = next_obs[agent_id] - trajectory["observations"][-1]
-        crashed = env.state[int(agent_id)].status[1]
-        is_safe = (crashed == 0)
-        action = action[::-1] # linear acc,  angular vel
-        trajectory["actions"].append(action)
-        trajectory["rewards"].append(rewards[agent_id])
-        trajectory["observations"].append(next_obs[agent_id])
-        trajectory["observation_diff"].append(obs_diff)
-        trajectory["states"].append(state)
-        trajectory["safe"].append(is_safe)
-        trajectory["infos"].append(infos[agent_id])
+            if terminations[agent_id] or truncations[agent_id]:
+                break
+            trajectory["observations"].append(next_obs[agent_id])
+            trajectory["observation_diff"].append(obs_diff)
 
-        if terminations[agent_id] or truncations[agent_id]:
-            break
-
-    env.close()
+        env.close()
+    except Exception as e:
+        import traceback, sys
+        traceback.print_exc()
+        sys.exit(1)
     return trajectory, len(trajectory["actions"])
 
 
@@ -76,8 +85,8 @@ def generate_random_traj_parallel(env_kwargs, num_traj, horizon=100, processes=N
     num_traj = int(num_traj)
     if processes is None:
         processes = cpu_count()
-
-    args_list = [(env_kwargs, horizon, None) for _ in range(num_traj)]
+    _seed = env_kwargs["random_seed"]
+    args_list = [(env_kwargs, horizon, _seed) for _ in range(num_traj)]
     trajectories = []
     lengths = []
 
@@ -208,7 +217,7 @@ if __name__ == "__main__":
     from posggym.envs.continuous.driving_continuous import ExponentialSensorModel
     import multiprocessing as mp
 
-    mp.set_start_method("forkserver")
+    mp.set_start_method("fork")
     env_kwargs = {
         "id": "DrivingContinuousRandom-v0",
         "render_mode": None,
@@ -220,4 +229,4 @@ if __name__ == "__main__":
         "obs_dist": 5,
         "num_agents": 1,
     }
-    data = build_dataset_from_env(env_kwargs, num_traj=10000, horizon=1000, processes=8)
+    data = build_dataset_from_env(env_kwargs, num_traj=100, horizon=1000, processes=1)

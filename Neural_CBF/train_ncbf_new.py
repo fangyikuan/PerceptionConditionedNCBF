@@ -5,26 +5,23 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from torch.utils.data import DataLoader, TensorDataset
-from collect_data import DubinsCar, Hyperrectangle
 import os
+from scipy.integrate import solve_ivp
+from unicycle import DubinsCar
+
 
 class CBFModel(nn.Module):
     def __init__(self, obs_dim):
         super(CBFModel, self).__init__()
         self.model = nn.Sequential(
-            nn.LayerNorm(obs_dim),
             nn.Linear(obs_dim, 16),
             nn.ReLU(),
-            nn.LayerNorm(16),
             nn.Linear(16, 64),
             nn.ReLU(),
-            nn.LayerNorm(64),
             nn.Linear(64, 128),
             nn.ReLU(),
-            nn.LayerNorm(128),
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.LayerNorm(64),
             nn.Linear(64, 16),
             nn.ReLU(),
             nn.Linear(16, 1)
@@ -35,8 +32,10 @@ class CBFModel(nn.Module):
 
 class NCBFTrainer:
     def __init__(self, obs_dim, state_dim, control_dim, training_data, test_data, U_bounds,
-                 batchsize=32, total_epoch=20, lambda_param=1.0, mu=1.0, alpha=0.1, use_pgd=False):
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+                 batchsize=32, total_epoch=20, lambda_param=1.0, mu=10.0, alpha=0, weight_decay=1e-6,
+                 learning_rate = 0.003, bound_eps=0.2,
+                 use_pgd=False):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         # print(f"Using device: {self.device}")
         self.obs_dim = obs_dim # Obs_dim means the dim of NN input
         self.state_dim = state_dim # State dim means the dim of "state" space in control problem
@@ -48,12 +47,21 @@ class NCBFTrainer:
         self.alpha = alpha
         self.use_pgd = use_pgd
         self.eps = 1e-3
-        self.U = Hyperrectangle(U_bounds[0], U_bounds[1], npy=False)
-
-        self.model = CBFModel(self.obs_dim+self.state_dim).to(self.device)
+        self.bound_eps = bound_eps
+        self.u_low = torch.tensor(U_bounds[0]).to(self.device)
+        self.u_high = torch.tensor(U_bounds[1]).to(self.device)
+        base_model = CBFModel(self.obs_dim+self.state_dim).to(self.device)
+        if torch.cuda.device_count() > 1:
+            print(f"Using {torch.cuda.device_count()} GPUs → DataParallel")
+            self.model = torch.nn.DataParallel(base_model)
+            # print("Model devices:", self.model.device_ids)
+            # print("Parameter example on:", next(self.model.parameters()).device)
+        else:
+            self.model = base_model
+        # self.model = CBFModel(self.obs_dim+self.state_dim).to(self.device)
         self.dyn_model = DubinsCar()
 
-        self.optimizer = optim.NAdam(self.model.parameters(), lr=0.01, betas=(0.9, 0.999), weight_decay=0.1)
+        self.optimizer = optim.NAdam(self.model.parameters(), lr=learning_rate, betas=(0.9, 0.999), weight_decay=weight_decay)
         self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=4, gamma=0.2)
 
         self.train_loader = training_data
@@ -84,8 +92,8 @@ class NCBFTrainer:
         return x_dot
 
     def forward_invariance_func(self,  obs_b, obs_diff_b, state_b, action_b, A, B, Delta=None):
-        x_grad = obs_b.clone().detach().requires_grad_(True)
-        x_grad = torch.cat((x_grad, state_b), dim=-1)
+        # x_grad = obs_b.clone().detach().requires_grad_(True)
+        x_grad = torch.cat([obs_b, state_b], -1).detach().requires_grad_(True)
         phi_x = self.model(x_grad)
         gradients = torch.autograd.grad(phi_x, x_grad, grad_outputs=torch.ones_like(phi_x), create_graph=True)[0]
         x_dot = self.affine_dyn_batch(A, state_b, B, action_b, Delta)
@@ -93,17 +101,49 @@ class NCBFTrainer:
         phi_dot = torch.sum(gradients * x_dot, dim=1, keepdim=True)
         return phi_dot + self.alpha * self.model(torch.cat([obs_b, state_b], dim=-1))
 
+    def forward_invariance_func_noAB(self, obs_b, obs_diff_b, state_b, action_b, alpha=0):
+        """
+        Compute the time derivative of phi along given trajectories plus a decay term: ϕ̇ + α*ϕ
+        """
+        batch_size = obs_b.shape[0]
+        state_dim = obs_b.shape[1]
+
+        # We need a clone of x with requires_grad=True for computing gradients
+        x_grad = obs_b.clone().detach().requires_grad_(True)
+        x_grad = torch.cat((x_grad, state_b), dim=-1)
+        phi_x = self.model(x_grad)
+
+        # Compute gradient of phi with respect to x
+        ones = torch.ones_like(phi_x, device=obs_b.device)
+        gradients = torch.autograd.grad(
+            outputs=phi_x,
+            inputs=x_grad,
+            grad_outputs=ones,
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True
+        )[0]
+        x_dot = self.dyn_model.dynamics(state_b, action_b, npy=False)
+        x_dot = torch.cat([obs_diff_b, x_dot], dim=-1)
+        # Compute ϕ̇ = ∇ϕᵀẋ (dot product of gradient and dynamics)
+        phi_dot = torch.sum(gradients * x_dot, dim=1, keepdim=True)
+
+        # Compute ϕ̇ + α*ϕ
+        l = phi_dot + self.alpha * self.model(torch.cat([obs_b, state_b], dim=-1))
+
+        return l
+
     def loss_naive_safeset(self, x, y_init):
         # y_init = y_init.squeeze(1)
         phi_x = self.model(x).squeeze(1)
-        return torch.mean(self.relu((2 * y_init - 1) * phi_x + 1e-6))
+        return torch.mean(self.relu((1- 2 * y_init) * phi_x + 0.01))
 
     def loss_regularization(self, x, y_init):
         # y_init = y_init.squeeze(1)
         phi_x = self.model(x).squeeze(1)
-        return torch.mean(self.sigmoid_fast((2 * y_init - 1) * phi_x))
+        return torch.mean(self.sigmoid_fast((1- 2 * y_init) * phi_x))
 
-    def loss_naive_fi(self, obs_b, obs_diff_b, state_b, action_b, A, B, y_init, Delta=None, epsilon=0.1):
+    def loss_naive_fi(self, obs_b, obs_diff_b, state_b, action_b, A, B, y_init, Delta=None, epsilon=1):
         # y_init = y_init.squeeze(1)
         safe_indices = (y_init == 1).nonzero(as_tuple=True)[0]
         if len(safe_indices) == 0: return torch.tensor(0.0, device=self.device)
@@ -127,13 +167,13 @@ class NCBFTrainer:
         if self.use_pgd:
             u_b = self.pgd_find_u_notce(x_bd, A_b, B_b, u_bd, Delta_b)
 
-        fi_vals = self.forward_invariance_func(obs_bd, obs_diff_bd, x_bd, u_bd, A_b, B_b, Delta=Delta_b)
+        fi_vals = self.forward_invariance_func_noAB(obs_bd, obs_diff_bd, x_bd, u_bd)
         return torch.mean(self.relu(fi_vals + 1e-6))
 
     def pgd_find_u_notce(self, x, A, B, u_0, Delta=None, lr=1, num_iter=10):
         u = u_0.clone().detach().requires_grad_(True)
         optimizer = optim.SGD([u], lr=lr)
-        low_U, high_U = self.U.low.to(self.device), self.U.high.to(self.device)
+        low_U, high_U = self.u_low.to(self.device), self.u_high.to(self.device)
 
         for _ in range(num_iter):
             optimizer.zero_grad()
@@ -148,12 +188,12 @@ class NCBFTrainer:
     def compute_dynamics_and_residuals(self, x_batch, u_batch):
         A_batch, B_batch = self.dyn_model.jacobian(x_batch, u_batch)
         Delta = torch.zeros(x_batch.shape[0], self.state_dim, device=self.device)
-        for i in range(x_batch.shape[0]):
-            x_eps = x_batch[i] - self.eps
-            u_eps = u_batch[i] - self.eps
-            f_actual = self.dyn_model.dynamics(x_eps, u_eps, npy=False)
-            f_linear = A_batch[i] @ x_eps + B_batch[i] @ u_eps
-            Delta[i] = f_actual - f_linear
+        x_eps = x_batch - self.eps  # or better: use torch.randn_like(...)
+        u_eps = u_batch  # keep the same control
+        f_actual = self.dyn_model.dynamics(x_eps, u_eps, npy=False)
+        f_linear = torch.einsum("bij,bj->bi", A_batch, x_eps) + \
+                   torch.einsum("bij,bj->bi", B_batch, u_eps)
+        Delta = f_actual - f_linear  # shape (B, 5)
         return A_batch, B_batch, Delta
 
     def train(self):
@@ -162,6 +202,10 @@ class NCBFTrainer:
         for epoch in range(1, self.total_epoch + 1):
             self.model.train()
             train_epoch_loss = []
+
+            phi_safe_epoch = []
+            phi_unsafe_epoch = []
+
             for batch in tqdm(self.train_loader, desc=f"Train Epoch {epoch}"):
                 obs_batch = batch["observation"].to(self.device)
                 obs_diff_batch = batch["observation_diff"].to(self.device)
@@ -171,11 +215,11 @@ class NCBFTrainer:
                 nn_input_batch = torch.cat([obs_batch, state_batch],dim=-1)
                 A, B, Delta = self.compute_dynamics_and_residuals(state_batch, action_batch)
                 if self.use_pgd:
-                    u = self.pgd_find_u_notce(state_batch, A, B, action_batch, Delta)
+                    action_batch = self.pgd_find_u_notce(state_batch, A, B, action_batch, Delta)
                 self.optimizer.zero_grad()
                 safe_loss = self.loss_naive_safeset(nn_input_batch, label_batch)
                 fi_loss = self.loss_naive_fi(obs_batch, obs_diff_batch, state_batch, action_batch, A,
-                                                              B, label_batch, Delta )
+                                                              B, label_batch, Delta, epsilon=self.bound_eps )
                 reg_loss = self.loss_regularization(nn_input_batch, label_batch)
                 loss = safe_loss + \
                        self.lambda_param * fi_loss+ \
@@ -184,10 +228,33 @@ class NCBFTrainer:
                 loss.backward()
                 self.optimizer.step()
                 train_epoch_loss.append(loss.item())
+                with torch.no_grad():
+                    phi_x = self.model(nn_input_batch)
+
+                safe_mask = (label_batch == 1)
+                unsafe_mask = ~safe_mask
+
+                if safe_mask.any():
+                    phi_safe_epoch.append(phi_x[safe_mask])
+                if unsafe_mask.any():
+                    phi_unsafe_epoch.append(phi_x[unsafe_mask])
+
             print(f"current safe loss is {safe_loss}, fi loss is {fi_loss}, reg loss is {reg_loss}")
             self.scheduler.step()
             avg_train = np.mean(train_epoch_loss)
             train_losses.append(avg_train)
+            if phi_safe_epoch and phi_unsafe_epoch:
+                phi_safe_epoch = torch.cat(phi_safe_epoch)
+                phi_unsafe_epoch = torch.cat(phi_unsafe_epoch)
+
+                phi_min = min(phi_safe_epoch.min(), phi_unsafe_epoch.min()).item()
+                phi_max = max(phi_safe_epoch.max(), phi_unsafe_epoch.max()).item()
+                frac_bd = (torch.cat([phi_safe_epoch, phi_unsafe_epoch]).abs() < self.bound_eps).float().mean().item()
+
+                print(f"[epoch {epoch:02d}] ϕ range {phi_min:+.3f} … {phi_max:+.3f}  "
+                      f"|ϕ|<ε({self.bound_eps})={frac_bd:.2%}  "
+                      f"μ_safe={phi_safe_epoch.mean().item():+.3f}  "
+                      f"μ_unsafe={phi_unsafe_epoch.mean().item():+.3f}")
 
             self.model.eval()
             test_epoch_loss = []
@@ -206,9 +273,14 @@ class NCBFTrainer:
                 test_epoch_loss.append(loss.item())
             avg_test = np.mean(test_epoch_loss)
             test_losses.append(avg_test)
+            # -- after every epoch --
 
             print(f"Epoch {epoch}: Train Loss = {avg_train:.4f}, Test Loss = {avg_test:.4f}")
-            torch.save(self.model.state_dict(), f"cbf_model_epoch_{epoch}.pt")
+            # torch.save(self.model.state_dict(), f"cbf_model_epoch_{epoch}.pt")
+            if isinstance(self.model, (nn.DataParallel, nn.parallel.DistributedDataParallel)):
+                torch.save(self.model.module.state_dict(), f"cbf_model_epoch_{epoch}.pt")
+            else:
+                torch.save(self.model.state_dict(), f"cbf_model_epoch_{epoch}.pt")
 
         self.plot_loss(train_losses, test_losses)
         return self.model, train_losses, test_losses
