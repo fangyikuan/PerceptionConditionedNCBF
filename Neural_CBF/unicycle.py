@@ -259,8 +259,9 @@ class CBF_QP_Filter:
         """
         # 1) CBF value + gradient -------------------------------------------------
         with torch.enable_grad():
-            x = torch.tensor(nn_input, dtype=torch.float32,
-                             device=self.device, requires_grad=True)
+            # x = torch.tensor(nn_input, dtype=torch.float32,
+            #                  device=self.device, requires_grad=True)
+            x = nn_input.requires_grad_()
             h = self.cbf(x.unsqueeze(0)).squeeze()
             dh_dx, = torch.autograd.grad(h, x)
 
