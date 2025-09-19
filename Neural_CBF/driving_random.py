@@ -55,7 +55,7 @@ parser.add_argument("--processes",        type=positive_int, default=25,
 parser.add_argument("--dataset_reload_dir", type=str, default=None,
                     help="path to .pkl dataset to *load* instead of collecting")
 parser.add_argument("--dataset_save_dir",  type=str,
-                    default="./Neural_CBF/env_dataset.pkl",
+                    default="./dataset/env_dataset.pkl",
                     help="where to save the collected dataset")
 parser.add_argument("--dump",             action="store_true",
                     help="pickle the collected dataset")
@@ -77,7 +77,7 @@ parser.add_argument("--rollout_steps",    type=positive_int, default=1000,
                     help="Number of Steps in rollout")
 # --- checkpoint paths ------------------------------------------------------- #
 parser.add_argument("--nn_reload_directory", type=str,
-                    default="./Neural_CBF/cbf_model_dtm_10_1e6.pt",
+                    default="./dataset/cbf_model_dtm_10_1e6.pt",
                     help="CBF weights to load when --train is *not* set")
 
 args = parser.parse_args()

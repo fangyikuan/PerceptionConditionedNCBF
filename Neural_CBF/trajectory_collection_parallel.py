@@ -207,6 +207,7 @@ def build_dataset_from_env(env_kwargs,
     print(f"Final dataset size: {len(dataset_dict['observation'])} samples.")
 
     if dump:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
         with open(save_path, "wb") as f:
             pickle.dump(dataset_dict, f)
         print(f"Saved dataset to {save_path}")

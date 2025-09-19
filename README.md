@@ -15,6 +15,7 @@ Some baseline implementations of planning and reinforcement learning algorithms 
 POSGGym supports and tests for `Python>=3.8`. We recommend using a virtual environment to install POSGGym (e.g. [conda](https://docs.conda.io/projects/conda/en/latest/index.html), [venv](https://docs.python.org/3/library/venv.html)).
 
 ```bash
+cd ./Neural_CBF
 conda env create -f ncbf.yml
 pip install -e .
 ```

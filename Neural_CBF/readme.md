@@ -12,7 +12,9 @@ conda activate ncbf
 
 # core libs
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118   # or cpu
-pip install posggym==0.4.1 cvxpy tqdm matplotlib
+cd .. # make sure you're returning to the PerceptionConditionedNCBF directory
+pip install -e .
+pip install cvxpy tqdm matplotlib
 ```
 > *CUDA* is optional – everything falls back to CPU.
 
@@ -20,41 +22,29 @@ pip install posggym==0.4.1 cvxpy tqdm matplotlib
 
 ### 2.  Repository layout
 ```
-├── main.py                    # <─ the script shown below
+Neural_CBF
+├── driving_random.py          # <─ the main and the only script to run
 ├── unicycle.py                # Dubins-car dynamics
 ├── train_ncbf_new.py          # NCBFTrainer + CBFModel
 ├── trajectory_collection_parallel.py
 ├── dataset_collection.py      # TrajectoryDataset + normaliser helpers
-└── Neural_CBF/
-    └── cbf_model_epoch_10.pt  # sample trained weights
 ```
 
 ---
 
-### 3.  Running the **demo / evaluation**
+### 3.  Running the **training script**
 ```bash
-python test_driving_random.py
+python driving_random.py --train --num_traj 10000 --dump
 ```
-* `train = False` in **main.py** loads the pre-trained checkpoint
-  `./Neural_CBF/cbf_model_epoch_10.pt` and shows one 1000-step rollout with the
-  QP CBF-filter.  
+* `--train` in **driving_random.py** automatically initialize environment, perform traj sampling, training and evaluation model.
+* After Training, the checkpoints for Neural CBFs will be shown as `cbf_model_epoch_{xx}.pt`
 * A window opens (`render_mode="human"`) – the car steers around random
   circular obstacles toward its destination.
 
 ---
 
-### 4.  Training your own CBF network
-1. **Collect 1 M transitions** (≈5 min @ 25 processes, 1000-step rollouts):
-   ```python
-   train = True                # flip the flag in main.py
-   ```
-   or run directly:
-   ```bash
-   python main.py --train          # see CLI below
-   ```
-   *Balanced sampling* is performed so “safe” and “unsafe” classes are equal.
 
-2. **NCBF optimisation**  
+### 4. **NCBF optimisation**  
    * hyper-parameters are passed to `NCBFTrainer` (see table below);
    * by default it trains for **10 epochs**, logging loss curves and saving
      `cbf_model_epoch_*.pt` after each epoch.
@@ -88,25 +78,14 @@ If the QP becomes infeasible, the code returns the nominal action.
 ---
 
 ### 6.  Command-line flags (optional)
-Modify **main.py** or call via environment variables:
+Modify **driving_random.py** or call via environment variables:
 ```bash
-python main.py \
+python driving_random.py \
   --seed 123 \
   --epochs 20 \
   --no-gpu
 ```
 *(Wire-up left to you – easiest is `argparse` in the header.)*
-
----
-
-### 7.  Tips & troubleshooting
-* **BrokenPipeError** in multi-process collection → launch with  
-  `python -X faulthandler main.py` and see `docs/fault-tolerant.md`
-  (pattern: spawn + supervisor restart).
-* To **record** videos, set  
-  `render_mode="rgb_array"` in `env_kwargs` and dump frames in the roll-loop.
-* **Hyper-parameters**: for tighter safety use larger `alpha` (QP) or `lambda_param`
-  (trainer). For less conservative behaviour decrease them.
 
 ---
 

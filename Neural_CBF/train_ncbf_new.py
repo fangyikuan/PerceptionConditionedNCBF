@@ -278,9 +278,9 @@ class NCBFTrainer:
             print(f"Epoch {epoch}: Train Loss = {avg_train:.4f}, Test Loss = {avg_test:.4f}")
             # torch.save(self.model.state_dict(), f"cbf_model_epoch_{epoch}.pt")
             if isinstance(self.model, (nn.DataParallel, nn.parallel.DistributedDataParallel)):
-                torch.save(self.model.module.state_dict(), f"./Neural_CBF/cbf_model_epoch_{epoch}.pt")
+                torch.save(self.model.module.state_dict(), f"./cbf_model_epoch_{epoch}.pt")
             else:
-                torch.save(self.model.state_dict(), f"./Neural_CBF/cbf_model_epoch_{epoch}.pt")
+                torch.save(self.model.state_dict(), f"./cbf_model_epoch_{epoch}.pt")
 
         self.plot_loss(train_losses, test_losses)
         return self.model, train_losses, test_losses
