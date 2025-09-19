@@ -7,7 +7,7 @@
 ### 1.  Environment & dependencies
 ```bash
 # python ≥3.8  (3.8–3.11 tested)
-conda create -n ncbf python=3.10
+conda env create -f ncbf.yml
 conda activate ncbf
 
 # core libs
