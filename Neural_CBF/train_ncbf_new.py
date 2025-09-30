@@ -136,12 +136,12 @@ class NCBFTrainer:
     def loss_naive_safeset(self, x, y_init):
         # y_init = y_init.squeeze(1)
         phi_x = self.model(x).squeeze(1)
-        return torch.mean(self.relu((1- 2 * y_init) * phi_x + 0.01))
+        return torch.mean(self.relu((2 * y_init -1) * phi_x + 0.01))
 
     def loss_regularization(self, x, y_init):
         # y_init = y_init.squeeze(1)
         phi_x = self.model(x).squeeze(1)
-        return torch.mean(self.sigmoid_fast((1- 2 * y_init) * phi_x))
+        return torch.mean(self.sigmoid_fast((2 * y_init -1 ) * phi_x))
 
     def loss_naive_fi(self, obs_b, obs_diff_b, state_b, action_b, A, B, y_init, Delta=None, epsilon=1):
         # y_init = y_init.squeeze(1)
