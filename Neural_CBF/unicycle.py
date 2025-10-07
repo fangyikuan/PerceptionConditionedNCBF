@@ -13,7 +13,6 @@ class DubinsCar:
     def __init__(self):
         self.state_dim   = 5   # x, y, theta, vx, vy
         self.control_dim = 2   # a, omega
-
     def dynamics(self, x, u, npy=True):
         """
         Continuous-time dynamics:
@@ -66,6 +65,66 @@ class DubinsCar:
                                  vy_dot], dim=-1)
 
         return x_dot
+
+    def f(self, x, npy=True):
+        """
+        Drift term f(x): shape (..., 5)
+        f(x) = [vx, vy, 0, 0, 0]
+        """
+        if npy:
+            x_arr = np.asarray(x)
+            vx = x_arr[..., 3]
+            vy = x_arr[..., 4]
+            z = np.zeros_like(vx)
+            return np.stack([vx, vy, z, z, z], axis=-1)
+        else:
+            x_t = x if torch.is_tensor(x) else torch.tensor(x, dtype=torch.float32)
+            vx = x_t[..., 3]
+            vy = x_t[..., 4]
+            z = torch.zeros_like(vx)
+            return torch.stack([vx, vy, z, z, z], dim=-1)
+
+    def g(self, x, npy=True):
+        """
+        Input matrix g(x): shape (..., 5, 2)
+        Columns correspond to controls [a, omega]:
+          g[:, :, 0] = [0, 0, 0, cos(theta), sin(theta)]^T
+          g[:, :, 1] = [0, 0, 1, -vy,        vx       ]^T
+        """
+        if npy:
+            x_arr = np.asarray(x)
+            theta = x_arr[..., 2]
+            vx = x_arr[..., 3]
+            vy = x_arr[..., 4]
+
+            g_a = np.stack([np.zeros_like(theta),
+                            np.zeros_like(theta),
+                            np.zeros_like(theta),
+                            np.cos(theta),
+                            np.sin(theta)], axis=-1)  # (..., 5)
+
+            g_om = np.stack([np.zeros_like(theta),
+                             np.zeros_like(theta),
+                             np.ones_like(theta),
+                             -vy,
+                             vx], axis=-1)  # (..., 5)
+
+            G = np.stack([g_a, g_om], axis=-1)  # (..., 5, 2)
+            return G
+        else:
+            x_t = x if torch.is_tensor(x) else torch.tensor(x, dtype=torch.float32)
+            theta = x_t[..., 2]
+            vx = x_t[..., 3]
+            vy = x_t[..., 4]
+
+            zeros = torch.zeros_like(theta)
+            ones = torch.ones_like(theta)
+
+            g_a = torch.stack([zeros, zeros, zeros, torch.cos(theta), torch.sin(theta)], dim=-1)  # (..., 5)
+            g_om = torch.stack([zeros, zeros, ones, -vy, vx], dim=-1)  # (..., 5)
+
+            G = torch.stack([g_a, g_om], dim=-1)  # (..., 5, 2)
+            return G
 
     def jacobian(self, x, u):
         """
@@ -237,7 +296,8 @@ class CBF_QP_Filter:
                  control_dim=2,
                  u_lower=(-0, -np.pi/4),
                  u_upper=(0.25,  np.pi/4),
-                 alpha=10.):
+                 alpha=10.,
+                 slack=5):
         self.cbf   = cbf_model.eval()
         self.udim  = control_dim
         self.xdim  = 5
@@ -247,6 +307,7 @@ class CBF_QP_Filter:
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.norm_controller = PIDGoalController()
         self.dyn_model = DubinsCar()
+        self.cbf_slack_w = slack
 
     @torch.no_grad()
     def safe_action(self,
@@ -274,26 +335,38 @@ class CBF_QP_Filter:
         u_nom_qp = u_nom_aw[[1, 0]].copy()  # [a , ω]  (QP order)
 
         # 3) system Jacobians -----------------------------------------------------
-        x_t = torch.as_tensor(state[:self.xdim], dtype=torch.float32)
-        u_t = torch.as_tensor(u_nom_qp, dtype=torch.float32)
+        x_t = state[:self.xdim]
+        u_t = u_nom_qp.copy()
+        # x_t = torch.as_tensor(state[:self.xdim], dtype=torch.float32)
+        # u_t = torch.as_tensor(u_nom_qp, dtype=torch.float32)
         A, B = self.dyn_model.jacobian(x_t, u_t)  # torch, shapes (xdim,xdim) & (xdim,udim)
         A, B = A.cpu().numpy().squeeze(0), B.cpu().numpy().squeeze(0)
 
+        f_t = self.dyn_model.f(x_t)  # drift term
+        g_t = self.dyn_model.g(x_t)  # input matrix
+        drift_t = f_t + g_t @ u_t  # true dot{x_t}
+        b = drift_t - (A @ x_t + B @ u_t)  # affine offset term
         # 4) CBF linear constraint  A_cbf u ≥ -B_cbf
         A_cbf = dh_x @ B  # (1,udim)
-        B_cbf = (dh_p @ diff_perception.reshape(-1, 1)
-                 + dh_x @ A @ state[:self.xdim].reshape(-1, 1)
-                 + self.alpha * h.item())
+        Lf_h = (dh_x @ (A @ state[:self.xdim].reshape(-1, 1) + b.reshape(-1, 1))
+                + dh_p @ diff_perception.reshape(-1, 1))
+
+        # B_cbf = L_f h + α(h)
+        B_cbf = Lf_h + self.alpha * h.item()
 
         # 5) QP -------------------------------------------------------------------
         u = cp.Variable(self.udim)  # [a, ω]
         Q = np.eye(self.udim)
         obj = 0.5 * cp.quad_form(u - u_nom_qp, Q)
-        constr = [A_cbf @ u >= -B_cbf,
+        sigma = cp.Variable(nonneg=True)
+        obj += self.cbf_slack_w * sigma
+
+        constr = [A_cbf @ u + sigma >= -B_cbf,
                   u >= self.u_lo.cpu().numpy(),
                   u <= self.u_hi.cpu().numpy()]
+
         prob = cp.Problem(cp.Minimize(obj), constr)
-        prob.solve(warm_start=True)
+        prob.solve(solver=cp.OSQP, warm_start=True)
         print(f"H:{h.item()}")
         if prob.status not in ("optimal", "optimal_inaccurate"):
             # return nominal (converted back to [ω , a])

@@ -32,9 +32,9 @@ class CBFModel(nn.Module):
 
 class NCBFTrainer:
     def __init__(self, obs_dim, state_dim, control_dim, training_data, test_data, U_bounds,
-                 batchsize=32, total_epoch=20, lambda_param=1.0, mu=10.0, alpha=0, weight_decay=1e-6,
+                 batchsize=32, total_epoch=20, lambda_param=0.1, mu=10.0, alpha=0, weight_decay=1e-6,
                  learning_rate = 0.003, bound_eps=0.2,
-                 use_pgd=False):
+                 use_pgd=False, no_perception=False):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         # print(f"Using device: {self.device}")
         self.obs_dim = obs_dim # Obs_dim means the dim of NN input
@@ -66,6 +66,7 @@ class NCBFTrainer:
 
         self.train_loader = training_data
         self.test_loader = test_data
+        self.no_perception = no_perception
 
     def prepare_data(self, raw_data):
         x_data = torch.tensor(np.column_stack([d[0] for d in raw_data]), dtype=torch.float32).to(self.device)
@@ -129,19 +130,19 @@ class NCBFTrainer:
         phi_dot = torch.sum(gradients * x_dot, dim=1, keepdim=True)
 
         # Compute ϕ̇ + α*ϕ
-        l = phi_dot + self.alpha * self.model(torch.cat([obs_b, state_b], dim=-1))
+        l = phi_dot + alpha * self.model(torch.cat([obs_b, state_b], dim=-1))
 
         return l
 
     def loss_naive_safeset(self, x, y_init):
         # y_init = y_init.squeeze(1)
         phi_x = self.model(x).squeeze(1)
-        return torch.mean(self.relu((2 * y_init -1) * phi_x + 0.01))
+        return torch.mean(self.relu((1- 2*y_init) * phi_x + 0.01))
 
     def loss_regularization(self, x, y_init):
         # y_init = y_init.squeeze(1)
         phi_x = self.model(x).squeeze(1)
-        return torch.mean(self.sigmoid_fast((2 * y_init -1 ) * phi_x))
+        return torch.mean(self.sigmoid_fast((1- 2*y_init ) * phi_x))
 
     def loss_naive_fi(self, obs_b, obs_diff_b, state_b, action_b, A, B, y_init, Delta=None, epsilon=1):
         # y_init = y_init.squeeze(1)
@@ -154,12 +155,12 @@ class NCBFTrainer:
         Delta_safe = Delta[safe_indices] if Delta is not None else None
 
         with torch.no_grad():
-            phi_x = self.model(torch.cat([obs_safe, x_safe],dim=-1))
+            phi_safe = self.model(torch.cat([obs_safe, x_safe], dim=-1))
 
-        boundary_indices = (torch.abs(phi_x) < epsilon).squeeze(1).nonzero(as_tuple=True)[0]
+        boundary_indices = (phi_safe.abs() < epsilon).squeeze(1).nonzero(as_tuple=True)[0]
         if len(boundary_indices) == 0: return torch.tensor(0.0, device=self.device)
-        obs_bd, obs_diff_bd,x_bd, u_bd = (obs_b[boundary_indices], obs_diff_b[boundary_indices], state_b[boundary_indices],
-                                                  action_b[boundary_indices])
+        obs_bd, obs_diff_bd,x_bd, u_bd = (obs_safe[boundary_indices], obs_diff_safe[boundary_indices], x_safe[boundary_indices],
+                                                  u_safe[boundary_indices])
         # x_b, u_b = x_safe[boundary_indices], u_safe[boundary_indices]
         A_b, B_b = A_safe[boundary_indices], B_safe[boundary_indices]
         Delta_b = Delta_safe[boundary_indices] if Delta_safe is not None else None
@@ -167,7 +168,7 @@ class NCBFTrainer:
         if self.use_pgd:
             u_b = self.pgd_find_u_notce(x_bd, A_b, B_b, u_bd, Delta_b)
 
-        fi_vals = self.forward_invariance_func_noAB(obs_bd, obs_diff_bd, x_bd, u_bd)
+        fi_vals = -self.forward_invariance_func_noAB(obs_bd, obs_diff_bd, x_bd, u_bd, self.alpha)
         return torch.mean(self.relu(fi_vals + 1e-6))
 
     def pgd_find_u_notce(self, x, A, B, u_0, Delta=None, lr=1, num_iter=10):

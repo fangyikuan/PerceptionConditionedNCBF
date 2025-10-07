@@ -66,7 +66,7 @@ parser.add_argument("--training_sample_portion", type=float, default=0.8,
 # --- training --------------------------------------------------------------- #
 parser.add_argument("--total_epoch",      type=positive_int, default=10)
 parser.add_argument("--batch_size",       type=positive_int, default=512)
-parser.add_argument("--mu",               type=float, default=1.0)
+parser.add_argument("--mu",               type=float, default=0.1)
 parser.add_argument("--lambda_param",     type=float, default=0.5)
 parser.add_argument("--bound_eps",        type=float, default=0.2)
 parser.add_argument("--weight_decay",     type=float, default=0.0)

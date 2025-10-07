@@ -152,7 +152,7 @@ def loss_naive_safeset(phi, x, y_init):
     # (2*y_init - 1) maps safe to 1 and unsafe to -1
     # We want phi(x) to be positive for safe states and negative for unsafe states
     # loss is positive when constraint is violated
-    loss = relu((2 * y_init - 1) * phi_x + 1e-6)
+    loss = relu((1 - 2*y_init) * phi_x + 1e-6)
 
     return torch.mean(loss)
 
@@ -167,7 +167,7 @@ def loss_regularization(phi, x, y_init):
     phi_x = phi(x).squeeze(1)  # [batch_size]
 
     # Sigmoid of the constraint
-    loss = sigmoid_fast((2 * y_init - 1) * phi_x)
+    loss = sigmoid_fast((1 - 2*y_init) * phi_x)
 
     return torch.mean(loss)
 
@@ -252,7 +252,7 @@ def loss_naive_fi(phi, A, x, B, u, y_init, use_pgd=False, use_adv=False, alpha=0
                                      alpha=alpha, Delta=Delta_boundary)
 
     # Loss is positive when constraint is violated (fi_values > 0)
-    loss = relu(fi_values + 1e-6)
+    loss = relu(-fi_values + 1e-6)
 
     return torch.mean(loss)
 
