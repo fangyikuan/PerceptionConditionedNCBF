@@ -70,7 +70,7 @@ parser.add_argument("--mu",               type=float, default=0.1)
 parser.add_argument("--lambda_param",     type=float, default=0.5)
 parser.add_argument("--bound_eps",        type=float, default=0.2)
 parser.add_argument("--weight_decay",     type=float, default=0.0)
-parser.add_argument("--alpha",            type=float, default=0.01,
+parser.add_argument("--alpha",            type=float, default=20,
                     help="α in CBF condition dot{h}+αh ≥ 0")
 # --- Roll-out Phrase Control ------------------------------------------------ #
 parser.add_argument("--rollout_steps",    type=positive_int, default=1000,
@@ -152,7 +152,8 @@ if __name__ == "__main__":
             mu=args.mu,
             lambda_param =args.lambda_param,
             bound_eps=args.bound_eps,
-            weight_decay = args.weight_decay
+            weight_decay = args.weight_decay,
+            alpha=args.alpha
         )
         model, train_loss, test_loss = trainer.train()
     else:

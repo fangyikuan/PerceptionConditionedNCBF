@@ -373,4 +373,11 @@ class CBF_QP_Filter:
             return u_nom_aw.astype(np.float32)
 
         u_qp = u.value.astype(np.float32)  # [a, ω] from solver
+        print("h:", float(h))
+        print("||dh_x||:", float(np.linalg.norm(dh_x)))
+        print("||A_cbf||:", float(np.linalg.norm(A_cbf)))  # dh_x @ B
+        print("Lf_h:", float(Lf_h))
+        print("alpha(h):", float(self.alpha * h.item()))
+        print("min/max u:", u.value, "status:", prob.status)
+
         return u_qp[[1, 0]]  # convert → [ω , a]
